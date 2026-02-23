@@ -1,0 +1,21 @@
+use gpui::actions;
+
+actions!([
+    ZoomIn,
+    ZoomOut,
+    ZoomToFit,
+    PanLeft,
+    PanRight,
+    PanUp,
+    PanDown,
+    SelectNext,
+    SelectPrevious,
+    ToggleSearch,
+    ToggleHelp,
+    GenerateTrace,
+    OpenFile,
+    ReloadTrace,
+    CloseTab,
+    NextTab,
+    PrevTab,
+]);

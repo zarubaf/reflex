@@ -1,0 +1,290 @@
+use gpui::*;
+
+use crate::app::{TooltipHover, TraceState};
+use crate::theme::colors;
+use crate::trace::model::RetireStatus;
+
+pub struct LabelPane {
+    state: Entity<TraceState>,
+    focus_handle: FocusHandle,
+    canvas_origin: Point<Pixels>,
+    /// Row currently under the mouse cursor.
+    hovered_row: Option<usize>,
+}
+
+impl LabelPane {
+    pub fn new(state: Entity<TraceState>, cx: &mut Context<Self>) -> Self {
+        Self {
+            state,
+            focus_handle: cx.focus_handle(),
+            canvas_origin: Point::default(),
+            hovered_row: None,
+        }
+    }
+}
+
+fn px_val(p: Pixels) -> f32 {
+    f32::from(p)
+}
+
+impl Render for LabelPane {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let state = self.state.clone();
+        let state_for_click = self.state.clone();
+        let state_for_scroll = self.state.clone();
+        let state_for_hover = self.state.clone();
+        let state_for_leave = self.state.clone();
+        let entity_for_prepaint = cx.entity().clone();
+        let entity_for_hover = cx.entity().clone();
+        let entity_for_leave = cx.entity().clone();
+        let canvas_origin = self.canvas_origin;
+
+        div()
+            .id("label-pane")
+            .bg(colors::BG_SECONDARY)
+            .size_full()
+            .overflow_hidden()
+            .track_focus(&self.focus_handle)
+            .on_scroll_wheel(move |event: &ScrollWheelEvent, _window, cx| {
+                state_for_scroll.update(cx, |ts, cx| {
+                    let delta = event.delta.pixel_delta(px(20.0));
+                    let dy = px_val(delta.y);
+                    if event.modifiers.control {
+                        if dy.abs() > 0.5 {
+                            let factor = (1.0 + dy * 0.005).clamp(0.8, 1.25);
+                            ts.viewport.zoom_both(factor, 0.0, 0.0);
+                        }
+                    } else {
+                        ts.viewport.pan(0.0, dy);
+                        if dy.abs() > 0.5 {
+                            ts.auto_follow();
+                        }
+                    }
+                    cx.notify();
+                });
+            })
+            .on_mouse_down(MouseButton::Left, move |event: &MouseDownEvent, _window, cx| {
+                let local_y = px_val(event.position.y) - px_val(canvas_origin.y);
+                state_for_click.update(cx, |ts, cx| {
+                    let row = ts.viewport.pixel_to_row(local_y) as usize;
+                    if row < ts.trace.row_count() {
+                        ts.selected_row = Some(row);
+                    }
+                    cx.notify();
+                });
+            })
+            .on_mouse_move(move |event: &MouseMoveEvent, _window, cx| {
+                let local_y = px_val(event.position.y) - px_val(canvas_origin.y);
+                let (row, max_row) = {
+                    let ts = state_for_hover.read(cx);
+                    (ts.viewport.pixel_to_row(local_y) as usize, ts.trace.row_count())
+                };
+                let new_row = if row < max_row { Some(row) } else { None };
+
+                // Build tooltip hover info.
+                let tooltip = new_row.and_then(|r| {
+                    let ts = state_for_hover.read(cx);
+                    let instr = &ts.trace.instructions[r];
+                    if !instr.tooltip.is_empty() {
+                        Some(TooltipHover {
+                            text: instr.tooltip.clone(),
+                            position: event.position,
+                        })
+                    } else {
+                        None
+                    }
+                });
+
+                entity_for_hover.update(cx, |pane: &mut LabelPane, _cx| {
+                    pane.hovered_row = new_row;
+                });
+                state_for_hover.update(cx, |ts, cx| {
+                    ts.tooltip_hover = tooltip;
+                    cx.notify();
+                });
+            })
+            .on_hover(move |hovered: &bool, _window, cx| {
+                if !hovered {
+                    entity_for_leave.update(cx, |pane: &mut LabelPane, _cx| {
+                        pane.hovered_row = None;
+                    });
+                    state_for_leave.update(cx, |ts, cx| {
+                        if ts.tooltip_hover.is_some() {
+                            ts.tooltip_hover = None;
+                            cx.notify();
+                        }
+                    });
+                }
+            })
+            .child(
+                canvas(
+                    {
+                        let state_pre = state.clone();
+                        move |bounds, _window, cx| {
+                            entity_for_prepaint.update(cx, |pane: &mut LabelPane, _cx| {
+                                pane.canvas_origin = bounds.origin;
+                            });
+                            state_pre.update(cx, |ts, _cx| {
+                                ts.viewport.view_height = px_val(bounds.size.height);
+                            });
+                            bounds
+                        }
+                    },
+                    move |bounds, _bounds_data, window, cx| {
+                        let (viewport, selected_row, trace) = {
+                            let ts = state.read(cx);
+                            (ts.viewport.clone(), ts.selected_row, ts.trace.clone())
+                        };
+                        paint_labels(bounds, &trace, &viewport, selected_row, window, cx);
+                    },
+                )
+                .size_full(),
+            )
+    }
+}
+
+fn paint_labels(
+    bounds: Bounds<Pixels>,
+    trace: &crate::trace::model::PipelineTrace,
+    vp: &crate::interaction::viewport::ViewportState,
+    selected_row: Option<usize>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let canvas_h = px_val(bounds.size.height);
+
+    window.paint_quad(fill(bounds, colors::BG_SECONDARY));
+
+    if trace.row_count() == 0 {
+        return;
+    }
+
+    let (row_start, row_end) = vp.visible_row_range();
+
+    let mut last_pixel_y: i32 = -2;
+    let mut row = row_start;
+    while row < row_end && row < trace.row_count() {
+        let y = vp.row_to_pixel(row as f64);
+        if y + vp.row_height < 0.0 || y > canvas_h {
+            row += 1;
+            continue;
+        }
+
+        let pixel_y = y as i32;
+        if vp.row_height < 1.0 && pixel_y == last_pixel_y {
+            row += 1;
+            continue;
+        }
+        last_pixel_y = pixel_y;
+
+        let instr = &trace.instructions[row];
+        let is_flushed = instr.retire_status == RetireStatus::Flushed;
+        let is_selected = selected_row == Some(row);
+
+        if is_selected {
+            window.paint_quad(fill(
+                Bounds {
+                    origin: Point {
+                        x: bounds.origin.x,
+                        y: bounds.origin.y + px(y),
+                    },
+                    size: Size {
+                        width: bounds.size.width,
+                        height: px(vp.row_height.max(1.0)),
+                    },
+                },
+                colors::SELECTION_BG,
+            ));
+        }
+
+        if vp.row_height < 8.0 {
+            row += 1;
+            continue;
+        }
+
+        let text_color = if is_flushed {
+            colors::TEXT_DIMMED
+        } else {
+            colors::TEXT_PRIMARY
+        };
+
+        let font_size = px((vp.row_height - 4.0).min(12.0).max(6.0));
+        let text_y = y + (vp.row_height - px_val(font_size)) / 2.0;
+
+        let row_str: SharedString = format!("{row}").into();
+        let row_run = TextRun {
+            len: row_str.len(),
+            font: Font {
+                family: "Menlo".into(),
+                features: Default::default(),
+                fallbacks: None,
+                weight: FontWeight::NORMAL,
+                style: FontStyle::Normal,
+            },
+            color: colors::TEXT_ROW_NUMBER,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let row_line = window.text_system().shape_line(row_str, font_size, &[row_run], None);
+        let _ = row_line.paint(
+            Point {
+                x: bounds.origin.x + px(4.0),
+                y: bounds.origin.y + px(text_y),
+            },
+            font_size,
+            window,
+            cx,
+        );
+
+        let disasm: SharedString = instr.disasm.clone().into();
+        let disasm_run = TextRun {
+            len: disasm.len(),
+            font: Font {
+                family: "Menlo".into(),
+                features: Default::default(),
+                fallbacks: None,
+                weight: FontWeight::NORMAL,
+                style: FontStyle::Normal,
+            },
+            color: text_color,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let disasm_line = window.text_system().shape_line(disasm, font_size, &[disasm_run], None);
+        let _ = disasm_line.paint(
+            Point {
+                x: bounds.origin.x + px(44.0),
+                y: bounds.origin.y + px(text_y),
+            },
+            font_size,
+            window,
+            cx,
+        );
+
+        row += 1;
+    }
+}
+
+impl Focusable for LabelPane {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl EventEmitter<gpui_component::dock::PanelEvent> for LabelPane {}
+
+impl gpui_component::dock::Panel for LabelPane {
+    fn panel_name(&self) -> &'static str {
+        "LabelPane"
+    }
+
+    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        "Instructions"
+    }
+
+    fn dump(&self, _cx: &App) -> gpui_component::dock::PanelState {
+        gpui_component::dock::PanelState::new(self)
+    }
+}

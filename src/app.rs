@@ -1,0 +1,656 @@
+use std::collections::VecDeque;
+use std::time::Instant;
+
+use gpui::prelude::FluentBuilder as _;
+use gpui::*;
+use gpui_component::tab::{Tab, TabBar};
+use gpui_component::{Icon, IconName};
+
+use crate::interaction::actions::*;
+use crate::interaction::viewport::ViewportState;
+use crate::theme::colors;
+use crate::title_bar::render_title_bar;
+use crate::trace::generator::{self, GeneratorConfig};
+use crate::trace::model::PipelineTrace;
+use crate::trace::TraceRegistry;
+use crate::views::help_overlay::HelpOverlay;
+use crate::views::pipeline_panel::PipelinePanel;
+use crate::views::search_bar::SearchBar;
+use crate::views::status_bar::StatusBar;
+
+/// Info for a tooltip currently being shown on hover.
+#[derive(Clone)]
+pub struct TooltipHover {
+    /// Tooltip text (newline-separated annotation lines).
+    pub text: String,
+    /// Mouse position in window coordinates.
+    pub position: gpui::Point<gpui::Pixels>,
+}
+
+/// Shared application state — single entity observed by all panels.
+pub struct TraceState {
+    pub trace: PipelineTrace,
+    pub viewport: ViewportState,
+    pub selected_row: Option<usize>,
+    /// Active tooltip hover info, if any.
+    pub tooltip_hover: Option<TooltipHover>,
+    /// FPS tracking.
+    pub frame_times: VecDeque<Instant>,
+    pub fps: f64,
+}
+
+impl TraceState {
+    pub fn new() -> Self {
+        Self {
+            trace: PipelineTrace::new(),
+            viewport: ViewportState::new(),
+            selected_row: None,
+            tooltip_hover: None,
+            frame_times: VecDeque::new(),
+            fps: 0.0,
+        }
+    }
+
+    pub fn load_trace(&mut self, trace: PipelineTrace) {
+        self.viewport.max_cycle = trace.max_cycle();
+        self.viewport.max_row = trace.row_count();
+        self.viewport.scroll_cycle = 0.0;
+        self.viewport.scroll_row = 0.0;
+        self.selected_row = None;
+        self.trace = trace;
+    }
+
+    /// Record a frame and update FPS.
+    pub fn record_frame(&mut self) {
+        let now = Instant::now();
+        self.frame_times.push_back(now);
+        while self.frame_times.len() > 1 {
+            if now.duration_since(*self.frame_times.front().unwrap()).as_secs_f64() > 1.0 {
+                self.frame_times.pop_front();
+            } else {
+                break;
+            }
+        }
+        self.fps = self.frame_times.len() as f64;
+    }
+
+    /// Auto-follow: adjust scroll_cycle so the visible rows' stages are in view.
+    pub fn auto_follow(&mut self) {
+        if self.trace.row_count() == 0 {
+            return;
+        }
+        let (row_start, row_end) = self.viewport.visible_row_range();
+        let row_end = row_end.min(self.trace.row_count());
+
+        let min_cycle = (row_start..row_end)
+            .filter(|&r| {
+                let instr = &self.trace.instructions[r];
+                instr.stage_range.start != instr.stage_range.end
+            })
+            .map(|r| self.trace.instructions[r].first_cycle)
+            .min();
+
+        let first_cycle = match min_cycle {
+            Some(c) => c,
+            None => return,
+        };
+
+        let margin = self.viewport.view_width as f64 * 0.05 / self.viewport.pixels_per_cycle as f64;
+        let target_cycle = (first_cycle as f64 - margin).max(0.0);
+
+        let current = self.viewport.scroll_cycle;
+        let blend = 0.3;
+        self.viewport.scroll_cycle = current + (target_cycle - current) * blend;
+        self.viewport.clamp();
+    }
+}
+
+// ─── Tab model ───────────────────────────────────────────────────────────────
+
+/// A single open tab with its own trace state.
+struct TabEntry {
+    #[allow(dead_code)]
+    id: usize,
+    file_path: Option<String>,
+    state: Entity<TraceState>,
+}
+
+fn tab_label(file_path: &Option<String>) -> String {
+    match file_path {
+        Some(p) => std::path::Path::new(p)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("Trace")
+            .to_string(),
+        None => "Generated".to_string(),
+    }
+}
+
+// ─── AppView ─────────────────────────────────────────────────────────────────
+
+/// Root application view.
+pub struct AppView {
+    tabs: Vec<TabEntry>,
+    active_tab: usize,
+    next_tab_id: usize,
+    /// Set to true when a tab change requires rebuilding the panel
+    /// but a Window reference was not available (e.g., from an async spawn).
+    needs_rebuild: bool,
+    pipeline_panel: Entity<PipelinePanel>,
+    status_bar: Entity<StatusBar>,
+    search_bar: Entity<SearchBar>,
+    help_overlay: Entity<HelpOverlay>,
+    focus_handle: FocusHandle,
+}
+
+impl AppView {
+    pub fn new(file_path: Option<String>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let state = cx.new(|_cx| TraceState::new());
+
+        // Load initial trace.
+        let initial_trace = if let Some(ref path) = file_path {
+            let registry = TraceRegistry::new();
+            match registry.load_file(std::path::Path::new(path)) {
+                Ok(trace) => trace,
+                Err(e) => {
+                    eprintln!("Error loading trace: {}", e);
+                    generator::generate(&GeneratorConfig {
+                        instruction_count: 10_000,
+                        ..Default::default()
+                    })
+                }
+            }
+        } else {
+            generator::generate(&GeneratorConfig {
+                instruction_count: 10_000,
+                ..Default::default()
+            })
+        };
+
+        state.update(cx, |ts, _cx| {
+            ts.load_trace(initial_trace);
+        });
+
+        let pipeline_panel = cx.new(|cx| PipelinePanel::new(state.clone(), window, cx));
+        let status_bar = cx.new(|_cx| StatusBar::new(state.clone()));
+        let focus_handle = cx.focus_handle();
+        let search_bar = cx.new(|cx| SearchBar::new(state.clone(), focus_handle.clone(), cx));
+        let help_overlay = cx.new(|cx| HelpOverlay::new(focus_handle.clone(), cx));
+
+        let initial_tab = TabEntry {
+            id: 0,
+            file_path,
+            state,
+        };
+
+        Self {
+            tabs: vec![initial_tab],
+            active_tab: 0,
+            next_tab_id: 1,
+            needs_rebuild: false,
+            pipeline_panel,
+            status_bar,
+            search_bar,
+            help_overlay,
+            focus_handle,
+        }
+    }
+
+    /// Get the active tab's state entity.
+    fn active_state(&self) -> &Entity<TraceState> {
+        &self.tabs[self.active_tab].state
+    }
+
+    /// Switch to a different tab, rebuilding the panel to point at the new state.
+    fn activate_tab(&mut self, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if idx >= self.tabs.len() || idx == self.active_tab {
+            return;
+        }
+        self.active_tab = idx;
+        self.rebuild_panel(window, cx);
+    }
+
+    /// Rebuild pipeline panel, status bar, and search bar to point at the active tab's state.
+    fn rebuild_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let state = self.active_state().clone();
+        self.pipeline_panel = cx.new(|cx| PipelinePanel::new(state.clone(), window, cx));
+        self.status_bar = cx.new(|_cx| StatusBar::new(state.clone()));
+        let focus = self.focus_handle.clone();
+        self.search_bar = cx.new(|cx| SearchBar::new(state.clone(), focus, cx));
+        cx.notify();
+    }
+
+    /// Open a trace file in a new tab.
+    fn open_in_new_tab(
+        &mut self,
+        path: &std::path::Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let registry = TraceRegistry::new();
+        match registry.load_file(path) {
+            Ok(trace) => {
+                let state = cx.new(|_cx| TraceState::new());
+                state.update(cx, |ts, _cx| ts.load_trace(trace));
+                let id = self.next_tab_id;
+                self.next_tab_id += 1;
+                self.tabs.push(TabEntry {
+                    id,
+                    file_path: Some(path.to_string_lossy().into_owned()),
+                    state,
+                });
+                self.active_tab = self.tabs.len() - 1;
+                self.rebuild_panel(window, cx);
+            }
+            Err(e) => {
+                eprintln!("Error loading trace file: {}", e);
+            }
+        }
+    }
+
+    /// Close a tab by index.
+    fn close_tab(&mut self, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tabs.len() <= 1 {
+            return; // never close the last tab
+        }
+        self.tabs.remove(idx);
+        // Adjust active_tab index.
+        if self.active_tab >= self.tabs.len() {
+            self.active_tab = self.tabs.len() - 1;
+        } else if self.active_tab > idx {
+            self.active_tab -= 1;
+        } else if self.active_tab == idx {
+            // Was pointing at the removed tab; now points at successor (or predecessor if last).
+            self.active_tab = self.active_tab.min(self.tabs.len() - 1);
+        }
+        self.rebuild_panel(window, cx);
+    }
+
+    // ─── Action handlers ─────────────────────────────────────────────────────
+
+    fn handle_zoom_in(&mut self, _: &ZoomIn, _window: &mut Window, cx: &mut Context<Self>) {
+        self.active_state().update(cx, |ts, cx| {
+            let mid_x = ts.viewport.view_width / 2.0;
+            ts.viewport.zoom(1.2, mid_x);
+            cx.notify();
+        });
+    }
+
+    fn handle_zoom_out(&mut self, _: &ZoomOut, _window: &mut Window, cx: &mut Context<Self>) {
+        self.active_state().update(cx, |ts, cx| {
+            let mid_x = ts.viewport.view_width / 2.0;
+            ts.viewport.zoom(1.0 / 1.2, mid_x);
+            cx.notify();
+        });
+    }
+
+    fn handle_zoom_to_fit(&mut self, _: &ZoomToFit, _window: &mut Window, cx: &mut Context<Self>) {
+        self.active_state().update(cx, |ts, cx| {
+            let vw = if ts.viewport.view_width > 0.0 { ts.viewport.view_width } else { 800.0 };
+            let vh = if ts.viewport.view_height > 0.0 { ts.viewport.view_height } else { 600.0 };
+            if ts.trace.max_cycle() > 0 {
+                ts.viewport.pixels_per_cycle =
+                    (vw / ts.trace.max_cycle() as f32).clamp(0.01, 500.0);
+                ts.viewport.scroll_cycle = 0.0;
+            }
+            if ts.trace.row_count() > 0 {
+                ts.viewport.row_height =
+                    (vh / ts.trace.row_count() as f32).clamp(0.05, 500.0);
+                ts.viewport.scroll_row = 0.0;
+            }
+            ts.viewport.clamp();
+            cx.notify();
+        });
+    }
+
+    fn handle_pan_left(&mut self, _: &PanLeft, _window: &mut Window, cx: &mut Context<Self>) {
+        self.active_state().update(cx, |ts, cx| { ts.viewport.pan(50.0, 0.0); cx.notify(); });
+    }
+
+    fn handle_pan_right(&mut self, _: &PanRight, _window: &mut Window, cx: &mut Context<Self>) {
+        self.active_state().update(cx, |ts, cx| { ts.viewport.pan(-50.0, 0.0); cx.notify(); });
+    }
+
+    fn handle_pan_up(&mut self, _: &PanUp, _window: &mut Window, cx: &mut Context<Self>) {
+        self.active_state().update(cx, |ts, cx| { ts.viewport.pan(0.0, 50.0); cx.notify(); });
+    }
+
+    fn handle_pan_down(&mut self, _: &PanDown, _window: &mut Window, cx: &mut Context<Self>) {
+        self.active_state().update(cx, |ts, cx| { ts.viewport.pan(0.0, -50.0); cx.notify(); });
+    }
+
+    fn handle_select_next(&mut self, _: &SelectNext, _window: &mut Window, cx: &mut Context<Self>) {
+        self.active_state().update(cx, |ts, cx| {
+            let max = ts.trace.row_count().saturating_sub(1);
+            let next = ts.selected_row.map(|r| (r + 1).min(max)).unwrap_or(0);
+            ts.selected_row = Some(next);
+            cx.notify();
+        });
+    }
+
+    fn handle_select_previous(&mut self, _: &SelectPrevious, _window: &mut Window, cx: &mut Context<Self>) {
+        self.active_state().update(cx, |ts, cx| {
+            let prev = ts.selected_row.map(|r| r.saturating_sub(1)).unwrap_or(0);
+            ts.selected_row = Some(prev);
+            cx.notify();
+        });
+    }
+
+    fn handle_toggle_search(&mut self, _: &ToggleSearch, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_bar.update(cx, |sb, cx| sb.toggle(window, cx));
+    }
+
+    fn handle_toggle_help(&mut self, _: &ToggleHelp, window: &mut Window, cx: &mut Context<Self>) {
+        self.help_overlay.update(cx, |h, cx| h.toggle(window, cx));
+    }
+
+    fn handle_generate_trace(&mut self, _: &GenerateTrace, window: &mut Window, cx: &mut Context<Self>) {
+        let trace = generator::generate(&GeneratorConfig {
+            instruction_count: 10_000,
+            ..Default::default()
+        });
+        let state = cx.new(|_cx| TraceState::new());
+        state.update(cx, |ts, _cx| ts.load_trace(trace));
+        let id = self.next_tab_id;
+        self.next_tab_id += 1;
+        self.tabs.push(TabEntry { id, file_path: None, state });
+        self.active_tab = self.tabs.len() - 1;
+        self.rebuild_panel(window, cx);
+    }
+
+    fn handle_open_file(&mut self, _: &OpenFile, _window: &mut Window, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: None,
+        });
+
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = receiver.await {
+                if let Some(path) = paths.first() {
+                    let registry = TraceRegistry::new();
+                    match registry.load_file(path) {
+                        Ok(trace) => {
+                            let path_str = path.to_string_lossy().into_owned();
+                            let _ = cx.update(|cx| {
+                                let _ = this.update(cx, |app, cx| {
+                                    let state = cx.new(|_cx| TraceState::new());
+                                    state.update(cx, |ts, _cx| ts.load_trace(trace));
+                                    let id = app.next_tab_id;
+                                    app.next_tab_id += 1;
+                                    app.tabs.push(TabEntry {
+                                        id,
+                                        file_path: Some(path_str),
+                                        state,
+                                    });
+                                    app.active_tab = app.tabs.len() - 1;
+                                    app.needs_rebuild = true;
+                                    cx.notify();
+                                });
+                            });
+                        }
+                        Err(e) => {
+                            eprintln!("Error loading trace: {}", e);
+                        }
+                    }
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn handle_reload_trace(&mut self, _: &ReloadTrace, _window: &mut Window, cx: &mut Context<Self>) {
+        let file_path = self.tabs[self.active_tab].file_path.clone();
+        let trace = if let Some(ref path) = file_path {
+            let registry = TraceRegistry::new();
+            match registry.load_file(std::path::Path::new(path)) {
+                Ok(trace) => trace,
+                Err(e) => {
+                    eprintln!("Error reloading trace: {}", e);
+                    return;
+                }
+            }
+        } else {
+            generator::generate(&GeneratorConfig {
+                instruction_count: 10_000,
+                ..Default::default()
+            })
+        };
+        self.active_state().update(cx, |ts, cx| {
+            ts.load_trace(trace);
+            cx.notify();
+        });
+    }
+
+    fn handle_close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
+        let idx = self.active_tab;
+        self.close_tab(idx, window, cx);
+    }
+
+    fn handle_next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tabs.len() > 1 {
+            let next = (self.active_tab + 1) % self.tabs.len();
+            self.activate_tab(next, window, cx);
+        }
+    }
+
+    fn handle_prev_tab(&mut self, _: &PrevTab, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tabs.len() > 1 {
+            let prev = if self.active_tab == 0 { self.tabs.len() - 1 } else { self.active_tab - 1 };
+            self.activate_tab(prev, window, cx);
+        }
+    }
+}
+
+impl Focusable for AppView {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Render for AppView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Deferred panel rebuild (from async open_file where Window wasn't available).
+        if self.needs_rebuild {
+            self.needs_rebuild = false;
+            self.rebuild_panel(window, cx);
+        }
+
+        let active_state = self.active_state().clone();
+        let active_tab_idx = self.active_tab;
+
+        // Build close buttons for each tab. We need entity ref for the click handlers.
+        let entity = cx.entity().clone();
+        let tab_bar = TabBar::new("trace-tabs")
+            .children(self.tabs.iter().enumerate().map(|(idx, entry)| {
+                let label = tab_label(&entry.file_path);
+                let close_entity = entity.clone();
+                let group_id: SharedString = format!("tab-{idx}").into();
+                let group_id2 = group_id.clone();
+                Tab::new()
+                    .group(group_id)
+                    .map(|mut tab| {
+                        tab.style().overflow.x = Some(gpui::Overflow::Visible);
+                        tab.style().overflow.y = Some(gpui::Overflow::Visible);
+                        tab
+                    })
+                    .child(
+                        div()
+                            .relative()
+                            .w_full()
+                            .h_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            // Extra right padding to make room for the × button
+                            .pr(px(10.0))
+                            .pl(px(10.0))
+                            .text_sm()
+                            .child(
+                                div().mt(px(-2.0)).child(label),
+                            )
+                            .child(
+                                div()
+                                    .id(("close-tab", idx))
+                                    .absolute()
+                                    .right(px(-9.0))
+                                    .top_0()
+                                    .bottom_0()
+                                    .flex()
+                                    .items_center()
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .w(px(16.0))
+                                            .h(px(16.0))
+                                            .rounded(px(4.0))
+                                            .cursor_pointer()
+                                            .opacity(0.0)
+                                            .group_hover(group_id2, |s| {
+                                                s.opacity(0.5)
+                                            })
+                                            .hover(|s| {
+                                                s.opacity(1.0)
+                                                    .bg(colors::GRID_LINE)
+                                            })
+                                            .text_color(colors::TEXT_PRIMARY)
+                                            .child(
+                                                Icon::new(IconName::Close)
+                                                    .size(px(10.0)),
+                                            ),
+                                    )
+                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                        cx.stop_propagation();
+                                    })
+                                    .on_click(
+                                        move |_event: &ClickEvent, window, cx| {
+                                            cx.stop_propagation();
+                                            close_entity.update(cx, |app: &mut AppView, cx| {
+                                                app.close_tab(idx, window, cx);
+                                            });
+                                        },
+                                    ),
+                            ),
+                    )
+            }))
+            .selected_index(active_tab_idx)
+            .on_click({
+                let switch_entity = entity.clone();
+                move |&idx, window, cx| {
+                    switch_entity.update(cx, |app: &mut AppView, cx| {
+                        app.activate_tab(idx, window, cx);
+                    });
+                }
+            })
+            .bg(colors::BG_PRIMARY);
+
+        div()
+            .id("app-root")
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(colors::BG_PRIMARY)
+            .text_color(colors::TEXT_PRIMARY)
+            .font_family(".SystemUIFont")
+            .track_focus(&self.focus_handle)
+            .on_action(cx.listener(Self::handle_zoom_in))
+            .on_action(cx.listener(Self::handle_zoom_out))
+            .on_action(cx.listener(Self::handle_zoom_to_fit))
+            .on_action(cx.listener(Self::handle_pan_left))
+            .on_action(cx.listener(Self::handle_pan_right))
+            .on_action(cx.listener(Self::handle_pan_up))
+            .on_action(cx.listener(Self::handle_pan_down))
+            .on_action(cx.listener(Self::handle_select_next))
+            .on_action(cx.listener(Self::handle_select_previous))
+            .on_action(cx.listener(Self::handle_toggle_search))
+            .on_action(cx.listener(Self::handle_toggle_help))
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key_char.as_deref() == Some("?") {
+                    this.help_overlay.update(cx, |h, cx| h.toggle(window, cx));
+                }
+            }))
+            .on_action(cx.listener(Self::handle_generate_trace))
+            .on_action(cx.listener(Self::handle_open_file))
+            .on_action(cx.listener(Self::handle_reload_trace))
+            .on_action(cx.listener(Self::handle_close_tab))
+            .on_action(cx.listener(Self::handle_next_tab))
+            .on_action(cx.listener(Self::handle_prev_tab))
+            // File drag & drop onto window — opens in new tab.
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                if let Some(path) = paths.paths().first() {
+                    this.open_in_new_tab(path, window, cx);
+                }
+            }))
+            // Title bar.
+            .child(render_title_bar(&active_state, cx))
+            // Tab bar.
+            .child(tab_bar)
+            // Main content.
+            .child(
+                div()
+                    .flex_1()
+                    .w_full()
+                    .overflow_hidden()
+                    .relative()
+                    .font_family("SF Mono, Menlo, Monaco, monospace")
+                    .child(self.pipeline_panel.clone())
+                    .child(self.search_bar.clone()),
+            )
+            // Status bar.
+            .child(
+                div()
+                    .font_family("SF Mono, Menlo, Monaco, monospace")
+                    .child(self.status_bar.clone()),
+            )
+            // Help overlay.
+            .child(self.help_overlay.clone())
+            // Annotation tooltip (topmost layer).
+            .when_some(
+                active_state.read(cx).tooltip_hover.clone(),
+                |el, hover| {
+                    let x = f32::from(hover.position.x) + 12.0;
+                    let y = f32::from(hover.position.y) + 16.0;
+                    el.child(
+                        div()
+                            .absolute()
+                            .top(px(y))
+                            .left(px(x))
+                            .max_w(px(360.0))
+                            .bg(Hsla {
+                                h: 220.0 / 360.0,
+                                s: 0.15,
+                                l: 0.13,
+                                a: 0.92,
+                            })
+                            .border_1()
+                            .border_color(Hsla {
+                                h: 220.0 / 360.0,
+                                s: 0.20,
+                                l: 0.28,
+                                a: 0.5,
+                            })
+                            .rounded(px(8.0))
+                            .px_3()
+                            .py(px(6.0))
+                            .shadow_lg()
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .text_color(colors::TEXT_PRIMARY)
+                                    .font_family("Menlo")
+                                    .children(
+                                        hover
+                                            .text
+                                            .split('\n')
+                                            .map(|line| div().child(line.to_string()))
+                                            .collect::<Vec<_>>(),
+                                    ),
+                            ),
+                    )
+                },
+            )
+    }
+}
