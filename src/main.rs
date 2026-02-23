@@ -21,6 +21,24 @@ fn force_dark_appearance() {
     app.setAppearance(dark.as_deref());
 }
 
+/// Set the application dock icon from the bundled .icns file.
+#[cfg(target_os = "macos")]
+fn set_app_icon() {
+    use objc2::{AnyThread, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSImage};
+
+    let icon_bytes = include_bytes!("../resources/reflex.icns");
+    let mtm = MainThreadMarker::from(unsafe { MainThreadMarker::new_unchecked() });
+    let app = NSApplication::sharedApplication(mtm);
+
+    unsafe {
+        let data = objc2_foundation::NSData::with_bytes(icon_bytes);
+        if let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) {
+            app.setApplicationIconImage(Some(&image));
+        }
+    }
+}
+
 fn main() {
     let file_path = std::env::args().nth(1);
 
@@ -33,6 +51,8 @@ fn main() {
 
         #[cfg(target_os = "macos")]
         force_dark_appearance();
+        #[cfg(target_os = "macos")]
+        set_app_icon();
 
         // Override theme colors to match our dark color scheme.
         {
@@ -62,6 +82,7 @@ fn main() {
             show: true,
             kind: WindowKind::Normal,
             is_movable: true,
+            window_background: WindowBackgroundAppearance::Opaque,
             ..Default::default()
         };
 
@@ -69,6 +90,18 @@ fn main() {
             cx.new(|cx| AppView::new(file_path.clone(), window, cx))
         })
         .expect("Failed to open window");
+
+        // Allow screen recording / screenshots by setting window sharing type.
+        #[cfg(target_os = "macos")]
+        {
+            use objc2::MainThreadMarker;
+            use objc2_app_kit::{NSApplication, NSWindowSharingType};
+            let mtm = MainThreadMarker::from(unsafe { MainThreadMarker::new_unchecked() });
+            let app = NSApplication::sharedApplication(mtm);
+            for window in app.windows().iter() {
+                window.setSharingType(NSWindowSharingType::ReadOnly);
+            }
+        }
 
         cx.activate(true);
     });

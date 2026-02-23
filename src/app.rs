@@ -145,60 +145,53 @@ pub struct AppView {
 
 impl AppView {
     pub fn new(file_path: Option<String>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let state = cx.new(|_cx| TraceState::new());
-
-        // Load initial trace.
-        let initial_trace = if let Some(ref path) = file_path {
-            let registry = TraceRegistry::new();
-            match registry.load_file(std::path::Path::new(path)) {
-                Ok(trace) => trace,
-                Err(e) => {
-                    eprintln!("Error loading trace: {}", e);
-                    generator::generate(&GeneratorConfig {
-                        instruction_count: 10_000,
-                        ..Default::default()
-                    })
-                }
-            }
-        } else {
-            generator::generate(&GeneratorConfig {
-                instruction_count: 10_000,
-                ..Default::default()
-            })
-        };
-
-        state.update(cx, |ts, _cx| {
-            ts.load_trace(initial_trace);
-        });
-
-        let pipeline_panel = cx.new(|cx| PipelinePanel::new(state.clone(), window, cx));
-        let status_bar = cx.new(|_cx| StatusBar::new(state.clone()));
         let focus_handle = cx.focus_handle();
-        let search_bar = cx.new(|cx| SearchBar::new(state.clone(), focus_handle.clone(), cx));
         let help_overlay = cx.new(|cx| HelpOverlay::new(focus_handle.clone(), cx));
 
-        let initial_tab = TabEntry {
-            id: 0,
-            file_path,
-            state,
-        };
+        // Placeholder state for initial empty panel construction.
+        let placeholder = cx.new(|_cx| TraceState::new());
 
-        Self {
-            tabs: vec![initial_tab],
+        let mut app = Self {
+            tabs: Vec::new(),
             active_tab: 0,
-            next_tab_id: 1,
+            next_tab_id: 0,
             needs_rebuild: false,
-            pipeline_panel,
-            status_bar,
-            search_bar,
+            pipeline_panel: cx.new(|cx| {
+                PipelinePanel::new(placeholder.clone(), window, cx)
+            }),
+            status_bar: cx.new(|_cx| StatusBar::new(placeholder.clone())),
+            search_bar: cx.new(|cx| {
+                SearchBar::new(placeholder.clone(), focus_handle.clone(), cx)
+            }),
             help_overlay,
             focus_handle,
+        };
+
+        if let Some(ref path) = file_path {
+            // CLI argument: open file in a tab.
+            app.open_in_new_tab(std::path::Path::new(path), window, cx);
+        } else if cfg!(debug_assertions) {
+            // Debug builds: open a generated trace for quick iteration.
+            let trace = generator::generate(&GeneratorConfig {
+                instruction_count: 10_000,
+                ..Default::default()
+            });
+            let state = cx.new(|_cx| TraceState::new());
+            state.update(cx, |ts, _cx| ts.load_trace(trace));
+            let id = app.next_tab_id;
+            app.next_tab_id += 1;
+            app.tabs.push(TabEntry { id, file_path: None, state });
+            app.active_tab = 0;
+            app.rebuild_panel(window, cx);
         }
+        // Release builds with no file argument: start empty.
+
+        app
     }
 
-    /// Get the active tab's state entity.
-    fn active_state(&self) -> &Entity<TraceState> {
-        &self.tabs[self.active_tab].state
+    /// Get the active tab's state entity, if any tab is open.
+    fn active_state(&self) -> Option<&Entity<TraceState>> {
+        self.tabs.get(self.active_tab).map(|t| &t.state)
     }
 
     /// Switch to a different tab, rebuilding the panel to point at the new state.
@@ -212,11 +205,12 @@ impl AppView {
 
     /// Rebuild pipeline panel, status bar, and search bar to point at the active tab's state.
     fn rebuild_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let state = self.active_state().clone();
-        self.pipeline_panel = cx.new(|cx| PipelinePanel::new(state.clone(), window, cx));
-        self.status_bar = cx.new(|_cx| StatusBar::new(state.clone()));
-        let focus = self.focus_handle.clone();
-        self.search_bar = cx.new(|cx| SearchBar::new(state.clone(), focus, cx));
+        if let Some(state) = self.active_state().cloned() {
+            self.pipeline_panel = cx.new(|cx| PipelinePanel::new(state.clone(), window, cx));
+            self.status_bar = cx.new(|_cx| StatusBar::new(state.clone()));
+            let focus = self.focus_handle.clone();
+            self.search_bar = cx.new(|cx| SearchBar::new(state.clone(), focus, cx));
+        }
         cx.notify();
     }
 
@@ -250,26 +244,37 @@ impl AppView {
 
     /// Close a tab by index.
     fn close_tab(&mut self, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if self.tabs.len() <= 1 {
-            return; // never close the last tab
+        if idx >= self.tabs.len() {
+            return;
         }
         self.tabs.remove(idx);
-        // Adjust active_tab index.
-        if self.active_tab >= self.tabs.len() {
-            self.active_tab = self.tabs.len() - 1;
-        } else if self.active_tab > idx {
-            self.active_tab -= 1;
-        } else if self.active_tab == idx {
-            // Was pointing at the removed tab; now points at successor (or predecessor if last).
-            self.active_tab = self.active_tab.min(self.tabs.len() - 1);
+        if self.tabs.is_empty() {
+            self.active_tab = 0;
+            cx.notify();
+        } else {
+            // Adjust active_tab index.
+            if self.active_tab >= self.tabs.len() {
+                self.active_tab = self.tabs.len() - 1;
+            } else if self.active_tab > idx {
+                self.active_tab -= 1;
+            } else if self.active_tab == idx {
+                self.active_tab = self.active_tab.min(self.tabs.len() - 1);
+            }
+            self.rebuild_panel(window, cx);
         }
-        self.rebuild_panel(window, cx);
     }
 
     // ─── Action handlers ─────────────────────────────────────────────────────
 
+    /// Helper: run a closure on the active state if a tab is open.
+    fn with_active_state(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut TraceState, &mut Context<TraceState>)) {
+        if let Some(state) = self.active_state().cloned() {
+            state.update(cx, f);
+        }
+    }
+
     fn handle_zoom_in(&mut self, _: &ZoomIn, _window: &mut Window, cx: &mut Context<Self>) {
-        self.active_state().update(cx, |ts, cx| {
+        self.with_active_state(cx, |ts, cx| {
             let mid_x = ts.viewport.view_width / 2.0;
             ts.viewport.zoom(1.2, mid_x);
             cx.notify();
@@ -277,7 +282,7 @@ impl AppView {
     }
 
     fn handle_zoom_out(&mut self, _: &ZoomOut, _window: &mut Window, cx: &mut Context<Self>) {
-        self.active_state().update(cx, |ts, cx| {
+        self.with_active_state(cx, |ts, cx| {
             let mid_x = ts.viewport.view_width / 2.0;
             ts.viewport.zoom(1.0 / 1.2, mid_x);
             cx.notify();
@@ -285,7 +290,7 @@ impl AppView {
     }
 
     fn handle_zoom_to_fit(&mut self, _: &ZoomToFit, _window: &mut Window, cx: &mut Context<Self>) {
-        self.active_state().update(cx, |ts, cx| {
+        self.with_active_state(cx, |ts, cx| {
             let vw = if ts.viewport.view_width > 0.0 { ts.viewport.view_width } else { 800.0 };
             let vh = if ts.viewport.view_height > 0.0 { ts.viewport.view_height } else { 600.0 };
             if ts.trace.max_cycle() > 0 {
@@ -304,23 +309,23 @@ impl AppView {
     }
 
     fn handle_pan_left(&mut self, _: &PanLeft, _window: &mut Window, cx: &mut Context<Self>) {
-        self.active_state().update(cx, |ts, cx| { ts.viewport.pan(50.0, 0.0); cx.notify(); });
+        self.with_active_state(cx, |ts, cx| { ts.viewport.pan(50.0, 0.0); cx.notify(); });
     }
 
     fn handle_pan_right(&mut self, _: &PanRight, _window: &mut Window, cx: &mut Context<Self>) {
-        self.active_state().update(cx, |ts, cx| { ts.viewport.pan(-50.0, 0.0); cx.notify(); });
+        self.with_active_state(cx, |ts, cx| { ts.viewport.pan(-50.0, 0.0); cx.notify(); });
     }
 
     fn handle_pan_up(&mut self, _: &PanUp, _window: &mut Window, cx: &mut Context<Self>) {
-        self.active_state().update(cx, |ts, cx| { ts.viewport.pan(0.0, 50.0); cx.notify(); });
+        self.with_active_state(cx, |ts, cx| { ts.viewport.pan(0.0, 50.0); cx.notify(); });
     }
 
     fn handle_pan_down(&mut self, _: &PanDown, _window: &mut Window, cx: &mut Context<Self>) {
-        self.active_state().update(cx, |ts, cx| { ts.viewport.pan(0.0, -50.0); cx.notify(); });
+        self.with_active_state(cx, |ts, cx| { ts.viewport.pan(0.0, -50.0); cx.notify(); });
     }
 
     fn handle_select_next(&mut self, _: &SelectNext, _window: &mut Window, cx: &mut Context<Self>) {
-        self.active_state().update(cx, |ts, cx| {
+        self.with_active_state(cx, |ts, cx| {
             let max = ts.trace.row_count().saturating_sub(1);
             let next = ts.selected_row.map(|r| (r + 1).min(max)).unwrap_or(0);
             ts.selected_row = Some(next);
@@ -329,7 +334,7 @@ impl AppView {
     }
 
     fn handle_select_previous(&mut self, _: &SelectPrevious, _window: &mut Window, cx: &mut Context<Self>) {
-        self.active_state().update(cx, |ts, cx| {
+        self.with_active_state(cx, |ts, cx| {
             let prev = ts.selected_row.map(|r| r.saturating_sub(1)).unwrap_or(0);
             ts.selected_row = Some(prev);
             cx.notify();
@@ -401,6 +406,9 @@ impl AppView {
     }
 
     fn handle_reload_trace(&mut self, _: &ReloadTrace, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.tabs.is_empty() {
+            return;
+        }
         let file_path = self.tabs[self.active_tab].file_path.clone();
         let trace = if let Some(ref path) = file_path {
             let registry = TraceRegistry::new();
@@ -417,15 +425,17 @@ impl AppView {
                 ..Default::default()
             })
         };
-        self.active_state().update(cx, |ts, cx| {
+        self.with_active_state(cx, |ts, cx| {
             ts.load_trace(trace);
             cx.notify();
         });
     }
 
     fn handle_close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
-        let idx = self.active_tab;
-        self.close_tab(idx, window, cx);
+        if !self.tabs.is_empty() {
+            let idx = self.active_tab;
+            self.close_tab(idx, window, cx);
+        }
     }
 
     fn handle_next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
@@ -457,7 +467,8 @@ impl Render for AppView {
             self.rebuild_panel(window, cx);
         }
 
-        let active_state = self.active_state().clone();
+        let has_tabs = !self.tabs.is_empty();
+        let active_state = self.active_state().cloned();
         let active_tab_idx = self.active_tab;
 
         // Build close buttons for each tab. We need entity ref for the click handlers.
@@ -585,11 +596,16 @@ impl Render for AppView {
                 }
             }))
             // Title bar.
-            .child(render_title_bar(&active_state, cx))
-            // Tab bar.
-            .child(tab_bar)
-            // Main content.
-            .child(
+            .child({
+                // Pass a dummy state if no tabs open.
+                let title_state = active_state.clone()
+                    .unwrap_or_else(|| cx.new(|_| TraceState::new()));
+                render_title_bar(&title_state, cx)
+            })
+            // Tab bar (only if tabs exist).
+            .when(has_tabs, |el| el.child(tab_bar))
+            // Main content or empty state.
+            .child(if has_tabs {
                 div()
                     .flex_1()
                     .w_full()
@@ -597,19 +613,42 @@ impl Render for AppView {
                     .relative()
                     .font_family("SF Mono, Menlo, Monaco, monospace")
                     .child(self.pipeline_panel.clone())
-                    .child(self.search_bar.clone()),
-            )
-            // Status bar.
-            .child(
+                    .child(self.search_bar.clone())
+            } else {
                 div()
-                    .font_family("SF Mono, Menlo, Monaco, monospace")
-                    .child(self.status_bar.clone()),
-            )
+                    .flex_1()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .flex_col()
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_size(px(16.0))
+                            .text_color(colors::TEXT_DIMMED)
+                            .child("Drop a Konata trace file here"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(colors::TEXT_ROW_NUMBER)
+                            .child("or press Cmd+O to open"),
+                    )
+            })
+            // Status bar (only if tabs exist).
+            .when(has_tabs, |el| {
+                el.child(
+                    div()
+                        .font_family("SF Mono, Menlo, Monaco, monospace")
+                        .child(self.status_bar.clone()),
+                )
+            })
             // Help overlay.
             .child(self.help_overlay.clone())
             // Annotation tooltip (topmost layer).
             .when_some(
-                active_state.read(cx).tooltip_hover.clone(),
+                active_state.and_then(|s| s.read(cx).tooltip_hover.clone()),
                 |el, hover| {
                     let x = f32::from(hover.position.x) + 12.0;
                     let y = f32::from(hover.position.y) + 16.0;

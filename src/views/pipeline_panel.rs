@@ -23,11 +23,33 @@ impl PipelinePanel {
         let label_pane = cx.new(|cx| LabelPane::new(state.clone(), cx));
         let timeline_pane = cx.new(|cx| TimelinePane::new(state.clone(), cx));
 
+        // Estimate label width from the longest disasm string.
+        // Row number column ~44px + text at ~7.2px per char (Menlo 12px) + padding.
+        let label_width = {
+            let ts = state.read(cx);
+            let max_disasm_len = ts
+                .trace
+                .instructions
+                .iter()
+                .take(100)
+                .map(|i| i.disasm.len())
+                .max()
+                .unwrap_or(0);
+            let row_digits = if ts.trace.row_count() > 0 {
+                (ts.trace.row_count() as f32).log10().floor() as usize + 1
+            } else {
+                1
+            };
+            let row_col_width = (row_digits as f32) * 7.2 + 12.0;
+            let text_width = (max_disasm_len as f32) * 7.2;
+            (row_col_width + text_width + 16.0).clamp(120.0, 600.0)
+        };
+
         Self {
             label_pane,
             timeline_pane,
             focus_handle: cx.focus_handle(),
-            label_width: 220.0,
+            label_width,
             dragging_splitter: false,
         }
     }

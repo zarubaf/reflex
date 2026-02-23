@@ -291,7 +291,7 @@ fn paint_timeline(
         let is_flushed = instr.retire_status == RetireStatus::Flushed;
 
         if detail_mode {
-            // Full detail: draw each stage separately.
+            // Full detail: single box per stage with centered text.
             for span in trace.stages_for(row) {
                 if span.end_cycle < cycle_start || span.start_cycle > cycle_end {
                     continue;
@@ -328,15 +328,18 @@ fn paint_timeline(
                     border_style: BorderStyle::default(),
                 });
 
-                // Stage name text at high zoom.
-                if vp.pixels_per_cycle > 20.0 && w > 30.0 && h > 8.0 {
+                // Stage name text — monospace, sized so 2 chars fit per cycle.
+                // Monospace char width ≈ 0.6 * font_size, so for 2 chars:
+                // 2 * 0.6 * font_size ≤ pixels_per_cycle → font_size ≤ ppc / 1.2
+                let font_size_val = (vp.pixels_per_cycle / 1.4).min(h - 2.0).max(1.0);
+                if font_size_val >= 5.0 {
                     let stage_name: SharedString =
                         trace.stage_name(span.stage_name_idx).to_string().into();
-                    let font_size = px((h - 4.0).min(12.0).max(6.0));
+                    let font_size = px(font_size_val);
                     let run = TextRun {
                         len: stage_name.len(),
                         font: Font {
-                            family: "Helvetica".into(),
+                            family: "Menlo".into(),
                             features: Default::default(),
                             fallbacks: None,
                             weight: FontWeight::NORMAL,
@@ -353,15 +356,34 @@ fn paint_timeline(
                         &[run],
                         None,
                     );
-                    let _ = line.paint(
-                        Point {
-                            x: bounds.origin.x + px(x + 3.0),
-                            y: bounds.origin.y + px(y + padding + 1.0),
+                    let text_width = px_val(line.width);
+                    let text_x = x + ((w - text_width) / 2.0).max(1.0);
+                    let text_y = y + padding + (h - font_size_val) / 2.0;
+
+                    // Clip text to the stage box bounds.
+                    let clip = ContentMask {
+                        bounds: Bounds {
+                            origin: Point {
+                                x: bounds.origin.x + px(x),
+                                y: bounds.origin.y + px(y + padding),
+                            },
+                            size: Size {
+                                width: px(w),
+                                height: px(h),
+                            },
                         },
-                        font_size,
-                        window,
-                        cx,
-                    );
+                    };
+                    window.with_content_mask(Some(clip), |window| {
+                        let _ = line.paint(
+                            Point {
+                                x: bounds.origin.x + px(text_x),
+                                y: bounds.origin.y + px(text_y),
+                            },
+                            font_size,
+                            window,
+                            cx,
+                        );
+                    });
                 }
             }
         } else {

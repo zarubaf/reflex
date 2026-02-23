@@ -37,8 +37,8 @@ struct InstrBuilder {
     retire_status: RetireStatus,
     first_cycle: u32,
     last_cycle: u32,
-    /// Currently open stage (not yet ended).
-    current_stage: Option<(StageNameIdx, u8, u32)>, // (name_idx, lane, start_cycle)
+    /// Currently open stages per lane (not yet ended).
+    open_stages: HashMap<u8, (StageNameIdx, u32)>, // lane -> (name_idx, start_cycle)
 }
 
 /// Parse a Konata/Kanata format trace file.
@@ -123,7 +123,7 @@ fn parse_konata(reader: &mut dyn Read) -> Result<PipelineTrace, TraceError> {
                         retire_status: RetireStatus::InFlight,
                         first_cycle: u32::MAX,
                         last_cycle: 0,
-                        current_stage: None,
+                        open_stages: HashMap::new(),
                     },
                 );
             }
@@ -169,11 +169,11 @@ fn parse_konata(reader: &mut dyn Read) -> Result<PipelineTrace, TraceError> {
                 let name_idx = trace.intern_stage(stage_name);
 
                 if let Some(builder) = builders.get_mut(&id) {
-                    // Close any previously open stage.
-                    if let Some((prev_idx, prev_lane, start)) = builder.current_stage.take() {
+                    // Close any previously open stage on this lane.
+                    if let Some((prev_idx, start)) = builder.open_stages.remove(&lane) {
                         builder.stages.push(StageSpan {
                             stage_name_idx: prev_idx,
-                            lane: prev_lane,
+                            lane,
                             _pad: 0,
                             start_cycle: start,
                             end_cycle: current_cycle,
@@ -181,7 +181,7 @@ fn parse_konata(reader: &mut dyn Read) -> Result<PipelineTrace, TraceError> {
                         builder.first_cycle = builder.first_cycle.min(start);
                         builder.last_cycle = builder.last_cycle.max(current_cycle);
                     }
-                    builder.current_stage = Some((name_idx, lane, current_cycle));
+                    builder.open_stages.insert(lane, (name_idx, current_cycle));
                 }
             }
             "E" => {
@@ -192,13 +192,14 @@ fn parse_konata(reader: &mut dyn Read) -> Result<PipelineTrace, TraceError> {
                     });
                 }
                 let id = parse_u32(parts[1], line_num)?;
+                let lane = parse_u8(parts[2], line_num)?;
 
                 if let Some(builder) = builders.get_mut(&id) {
-                    if let Some((prev_idx, prev_lane, start)) = builder.current_stage.take() {
-                        let end = current_cycle; // E marks end (exclusive)
+                    if let Some((prev_idx, start)) = builder.open_stages.remove(&lane) {
+                        let end = current_cycle;
                         builder.stages.push(StageSpan {
                             stage_name_idx: prev_idx,
-                            lane: prev_lane,
+                            lane,
                             _pad: 0,
                             start_cycle: start,
                             end_cycle: end,
@@ -219,11 +220,11 @@ fn parse_konata(reader: &mut dyn Read) -> Result<PipelineTrace, TraceError> {
                 let retire_type = parse_u32(parts[3], line_num)?;
 
                 if let Some(builder) = builders.get_mut(&id) {
-                    // Close any open stage.
-                    if let Some((prev_idx, prev_lane, start)) = builder.current_stage.take() {
+                    // Close all open stages on all lanes.
+                    for (lane, (prev_idx, start)) in builder.open_stages.drain() {
                         builder.stages.push(StageSpan {
                             stage_name_idx: prev_idx,
-                            lane: prev_lane,
+                            lane,
                             _pad: 0,
                             start_cycle: start,
                             end_cycle: current_cycle,
@@ -259,11 +260,11 @@ fn parse_konata(reader: &mut dyn Read) -> Result<PipelineTrace, TraceError> {
     // Finalize: emit instructions in order.
     for id in &order {
         if let Some(mut builder) = builders.remove(id) {
-            // Close any unclosed stage.
-            if let Some((prev_idx, prev_lane, start)) = builder.current_stage.take() {
+            // Close any unclosed stages on all lanes.
+            for (lane, (prev_idx, start)) in builder.open_stages.drain() {
                 builder.stages.push(StageSpan {
                     stage_name_idx: prev_idx,
-                    lane: prev_lane,
+                    lane,
                     _pad: 0,
                     start_cycle: start,
                     end_cycle: current_cycle,
