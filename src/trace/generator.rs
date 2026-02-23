@@ -64,24 +64,17 @@ pub fn generate(config: &GeneratorConfig) -> PipelineTrace {
     let n_stages = stage_indices.len();
 
     let disasm_ops = [
-        "add", "sub", "mul", "ldr", "str", "beq", "bne", "and", "orr", "eor", "lsl", "asr",
-        "cmp", "mov", "nop", "ret",
+        "add", "sub", "mul", "ldr", "str", "beq", "bne", "and", "orr", "eor", "lsl", "asr", "cmp",
+        "mov", "nop", "ret",
     ];
     let regs = [
-        "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12",
-        "x13", "x14", "x15",
+        "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13",
+        "x14", "x15",
     ];
 
     // Pad or truncate stage_durations to match stages length.
     let base_durations: Vec<u32> = (0..n_stages)
-        .map(|i| {
-            config
-                .stage_durations
-                .get(i)
-                .copied()
-                .unwrap_or(1)
-                .max(1)
-        })
+        .map(|i| config.stage_durations.get(i).copied().unwrap_or(1).max(1))
         .collect();
 
     let width = config.fetch_width as usize;
@@ -115,8 +108,7 @@ pub fn generate(config: &GeneratorConfig) -> PipelineTrace {
                 }
             } else if op == "beq" || op == "bne" {
                 if rng.gen_bool(config.flush_probability.min(1.0)) {
-                    let flush_count =
-                        rng.gen_range(1..=4.min(config.instruction_count - (i + g)));
+                    let flush_count = rng.gen_range(1..=4.min(config.instruction_count - (i + g)));
                     next_flush_end = Some(i + g + flush_count);
                     true
                 } else {
@@ -257,7 +249,8 @@ mod tests {
             let spans = trace.stages_for(row);
             for w in spans.windows(2) {
                 assert_eq!(
-                    w[0].end_cycle, w[1].start_cycle,
+                    w[0].end_cycle,
+                    w[1].start_cycle,
                     "Gap in row {}: {} ends at {} but next starts at {}",
                     row,
                     trace.stage_name(w[0].stage_name_idx),

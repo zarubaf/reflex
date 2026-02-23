@@ -72,12 +72,6 @@ impl Render for StatusBar {
                     .child(zoom_info)
                     .child(sel_info),
             )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(fps_info),
-            )
+            .child(div().flex().items_center().gap_2().child(fps_info))
     }
 }

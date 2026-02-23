@@ -15,11 +15,7 @@ pub struct PipelinePanel {
 }
 
 impl PipelinePanel {
-    pub fn new(
-        state: Entity<TraceState>,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn new(state: Entity<TraceState>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         let label_pane = cx.new(|cx| LabelPane::new(state.clone(), cx));
         let timeline_pane = cx.new(|cx| TimelinePane::new(state.clone(), cx));
 

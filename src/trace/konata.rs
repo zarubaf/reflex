@@ -61,7 +61,7 @@ fn parse_konata(reader: &mut dyn Read) -> Result<PipelineTrace, TraceError> {
     let mut order: Vec<u32> = Vec::new(); // track insertion order
 
     for (line_num, line_result) in buf.lines().enumerate() {
-        let line = line_result.map_err(|e| TraceError::Io(e))?;
+        let line = line_result.map_err(TraceError::Io)?;
         let line = line.trim();
 
         if line.is_empty() || line.starts_with('#') {
@@ -72,8 +72,8 @@ fn parse_konata(reader: &mut dyn Read) -> Result<PipelineTrace, TraceError> {
             continue;
         }
 
-        if line.starts_with("C=") {
-            let raw = line[2..].trim();
+        if let Some(rest) = line.strip_prefix("C=") {
+            let raw = rest.trim();
             let val = raw.parse::<i64>().map_err(|_| TraceError::Parse {
                 line: line_num + 1,
                 message: format!("Invalid cycle number: {}", raw),

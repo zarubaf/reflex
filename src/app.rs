@@ -65,7 +65,11 @@ impl TraceState {
         let now = Instant::now();
         self.frame_times.push_back(now);
         while self.frame_times.len() > 1 {
-            if now.duration_since(*self.frame_times.front().unwrap()).as_secs_f64() > 1.0 {
+            if now
+                .duration_since(*self.frame_times.front().unwrap())
+                .as_secs_f64()
+                > 1.0
+            {
                 self.frame_times.pop_front();
             } else {
                 break;
@@ -156,13 +160,9 @@ impl AppView {
             active_tab: 0,
             next_tab_id: 0,
             needs_rebuild: false,
-            pipeline_panel: cx.new(|cx| {
-                PipelinePanel::new(placeholder.clone(), window, cx)
-            }),
+            pipeline_panel: cx.new(|cx| PipelinePanel::new(placeholder.clone(), window, cx)),
             status_bar: cx.new(|_cx| StatusBar::new(placeholder.clone())),
-            search_bar: cx.new(|cx| {
-                SearchBar::new(placeholder.clone(), focus_handle.clone(), cx)
-            }),
+            search_bar: cx.new(|cx| SearchBar::new(placeholder.clone(), focus_handle.clone(), cx)),
             help_overlay,
             focus_handle,
         };
@@ -180,7 +180,11 @@ impl AppView {
             state.update(cx, |ts, _cx| ts.load_trace(trace));
             let id = app.next_tab_id;
             app.next_tab_id += 1;
-            app.tabs.push(TabEntry { id, file_path: None, state });
+            app.tabs.push(TabEntry {
+                id,
+                file_path: None,
+                state,
+            });
             app.active_tab = 0;
             app.rebuild_panel(window, cx);
         }
@@ -267,7 +271,11 @@ impl AppView {
     // ─── Action handlers ─────────────────────────────────────────────────────
 
     /// Helper: run a closure on the active state if a tab is open.
-    fn with_active_state(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut TraceState, &mut Context<TraceState>)) {
+    fn with_active_state(
+        &mut self,
+        cx: &mut Context<Self>,
+        f: impl FnOnce(&mut TraceState, &mut Context<TraceState>),
+    ) {
         if let Some(state) = self.active_state().cloned() {
             state.update(cx, f);
         }
@@ -291,16 +299,23 @@ impl AppView {
 
     fn handle_zoom_to_fit(&mut self, _: &ZoomToFit, _window: &mut Window, cx: &mut Context<Self>) {
         self.with_active_state(cx, |ts, cx| {
-            let vw = if ts.viewport.view_width > 0.0 { ts.viewport.view_width } else { 800.0 };
-            let vh = if ts.viewport.view_height > 0.0 { ts.viewport.view_height } else { 600.0 };
+            let vw = if ts.viewport.view_width > 0.0 {
+                ts.viewport.view_width
+            } else {
+                800.0
+            };
+            let vh = if ts.viewport.view_height > 0.0 {
+                ts.viewport.view_height
+            } else {
+                600.0
+            };
             if ts.trace.max_cycle() > 0 {
                 ts.viewport.pixels_per_cycle =
                     (vw / ts.trace.max_cycle() as f32).clamp(0.01, 500.0);
                 ts.viewport.scroll_cycle = 0.0;
             }
             if ts.trace.row_count() > 0 {
-                ts.viewport.row_height =
-                    (vh / ts.trace.row_count() as f32).clamp(0.05, 500.0);
+                ts.viewport.row_height = (vh / ts.trace.row_count() as f32).clamp(0.05, 500.0);
                 ts.viewport.scroll_row = 0.0;
             }
             ts.viewport.clamp();
@@ -309,19 +324,31 @@ impl AppView {
     }
 
     fn handle_pan_left(&mut self, _: &PanLeft, _window: &mut Window, cx: &mut Context<Self>) {
-        self.with_active_state(cx, |ts, cx| { ts.viewport.pan(50.0, 0.0); cx.notify(); });
+        self.with_active_state(cx, |ts, cx| {
+            ts.viewport.pan(50.0, 0.0);
+            cx.notify();
+        });
     }
 
     fn handle_pan_right(&mut self, _: &PanRight, _window: &mut Window, cx: &mut Context<Self>) {
-        self.with_active_state(cx, |ts, cx| { ts.viewport.pan(-50.0, 0.0); cx.notify(); });
+        self.with_active_state(cx, |ts, cx| {
+            ts.viewport.pan(-50.0, 0.0);
+            cx.notify();
+        });
     }
 
     fn handle_pan_up(&mut self, _: &PanUp, _window: &mut Window, cx: &mut Context<Self>) {
-        self.with_active_state(cx, |ts, cx| { ts.viewport.pan(0.0, 50.0); cx.notify(); });
+        self.with_active_state(cx, |ts, cx| {
+            ts.viewport.pan(0.0, 50.0);
+            cx.notify();
+        });
     }
 
     fn handle_pan_down(&mut self, _: &PanDown, _window: &mut Window, cx: &mut Context<Self>) {
-        self.with_active_state(cx, |ts, cx| { ts.viewport.pan(0.0, -50.0); cx.notify(); });
+        self.with_active_state(cx, |ts, cx| {
+            ts.viewport.pan(0.0, -50.0);
+            cx.notify();
+        });
     }
 
     fn handle_select_next(&mut self, _: &SelectNext, _window: &mut Window, cx: &mut Context<Self>) {
@@ -333,7 +360,12 @@ impl AppView {
         });
     }
 
-    fn handle_select_previous(&mut self, _: &SelectPrevious, _window: &mut Window, cx: &mut Context<Self>) {
+    fn handle_select_previous(
+        &mut self,
+        _: &SelectPrevious,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.with_active_state(cx, |ts, cx| {
             let prev = ts.selected_row.map(|r| r.saturating_sub(1)).unwrap_or(0);
             ts.selected_row = Some(prev);
@@ -341,7 +373,12 @@ impl AppView {
         });
     }
 
-    fn handle_toggle_search(&mut self, _: &ToggleSearch, window: &mut Window, cx: &mut Context<Self>) {
+    fn handle_toggle_search(
+        &mut self,
+        _: &ToggleSearch,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.search_bar.update(cx, |sb, cx| sb.toggle(window, cx));
     }
 
@@ -349,7 +386,12 @@ impl AppView {
         self.help_overlay.update(cx, |h, cx| h.toggle(window, cx));
     }
 
-    fn handle_generate_trace(&mut self, _: &GenerateTrace, window: &mut Window, cx: &mut Context<Self>) {
+    fn handle_generate_trace(
+        &mut self,
+        _: &GenerateTrace,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let trace = generator::generate(&GeneratorConfig {
             instruction_count: 10_000,
             ..Default::default()
@@ -358,7 +400,11 @@ impl AppView {
         state.update(cx, |ts, _cx| ts.load_trace(trace));
         let id = self.next_tab_id;
         self.next_tab_id += 1;
-        self.tabs.push(TabEntry { id, file_path: None, state });
+        self.tabs.push(TabEntry {
+            id,
+            file_path: None,
+            state,
+        });
         self.active_tab = self.tabs.len() - 1;
         self.rebuild_panel(window, cx);
     }
@@ -405,7 +451,12 @@ impl AppView {
         .detach();
     }
 
-    fn handle_reload_trace(&mut self, _: &ReloadTrace, _window: &mut Window, cx: &mut Context<Self>) {
+    fn handle_reload_trace(
+        &mut self,
+        _: &ReloadTrace,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.tabs.is_empty() {
             return;
         }
@@ -447,7 +498,11 @@ impl AppView {
 
     fn handle_prev_tab(&mut self, _: &PrevTab, window: &mut Window, cx: &mut Context<Self>) {
         if self.tabs.len() > 1 {
-            let prev = if self.active_tab == 0 { self.tabs.len() - 1 } else { self.active_tab - 1 };
+            let prev = if self.active_tab == 0 {
+                self.tabs.len() - 1
+            } else {
+                self.active_tab - 1
+            };
             self.activate_tab(prev, window, cx);
         }
     }
@@ -498,9 +553,7 @@ impl Render for AppView {
                             .pr(px(10.0))
                             .pl(px(10.0))
                             .text_sm()
-                            .child(
-                                div().mt(px(-2.0)).child(label),
-                            )
+                            .child(div().mt(px(-2.0)).child(label))
                             .child(
                                 div()
                                     .id(("close-tab", idx))
@@ -520,30 +573,20 @@ impl Render for AppView {
                                             .rounded(px(4.0))
                                             .cursor_pointer()
                                             .opacity(0.0)
-                                            .group_hover(group_id2, |s| {
-                                                s.opacity(0.5)
-                                            })
-                                            .hover(|s| {
-                                                s.opacity(1.0)
-                                                    .bg(colors::GRID_LINE)
-                                            })
+                                            .group_hover(group_id2, |s| s.opacity(0.5))
+                                            .hover(|s| s.opacity(1.0).bg(colors::GRID_LINE))
                                             .text_color(colors::TEXT_PRIMARY)
-                                            .child(
-                                                Icon::new(IconName::Close)
-                                                    .size(px(10.0)),
-                                            ),
+                                            .child(Icon::new(IconName::Close).size(px(10.0))),
                                     )
                                     .on_mouse_down(MouseButton::Left, |_, _, cx| {
                                         cx.stop_propagation();
                                     })
-                                    .on_click(
-                                        move |_event: &ClickEvent, window, cx| {
-                                            cx.stop_propagation();
-                                            close_entity.update(cx, |app: &mut AppView, cx| {
-                                                app.close_tab(idx, window, cx);
-                                            });
-                                        },
-                                    ),
+                                    .on_click(move |_event: &ClickEvent, window, cx| {
+                                        cx.stop_propagation();
+                                        close_entity.update(cx, |app: &mut AppView, cx| {
+                                            app.close_tab(idx, window, cx);
+                                        });
+                                    }),
                             ),
                     )
             }))
@@ -598,7 +641,8 @@ impl Render for AppView {
             // Title bar.
             .child({
                 // Pass a dummy state if no tabs open.
-                let title_state = active_state.clone()
+                let title_state = active_state
+                    .clone()
                     .unwrap_or_else(|| cx.new(|_| TraceState::new()));
                 render_title_bar(&title_state, cx)
             })

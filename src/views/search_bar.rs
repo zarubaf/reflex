@@ -167,13 +167,9 @@ impl Render for SearchBar {
                     .flex_1()
                     .overflow_hidden()
                     .child(if self.query.is_empty() {
-                        div()
-                            .text_color(colors::TEXT_DIMMED)
-                            .child("Search...")
+                        div().text_color(colors::TEXT_DIMMED).child("Search...")
                     } else if self.selected_all {
-                        div()
-                            .bg(colors::SELECTION_BG)
-                            .child(self.query.clone())
+                        div().bg(colors::SELECTION_BG).child(self.query.clone())
                     } else {
                         div().child(self.query.clone())
                     }),

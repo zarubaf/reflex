@@ -86,12 +86,11 @@ impl ViewportState {
     fn apply_zoom(&mut self, factor: f32, focal_x: f32, focal_y: f32) {
         let cycle_at_focal = self.pixel_to_cycle(focal_x);
         self.pixels_per_cycle = (self.pixels_per_cycle * factor).clamp(0.01, 500.0);
-        self.scroll_cycle =
-            cycle_at_focal - (focal_x as f64 / self.pixels_per_cycle as f64);
+        self.scroll_cycle = cycle_at_focal - (focal_x as f64 / self.pixels_per_cycle as f64);
 
         let row_at_focal = self.pixel_to_row(focal_y);
         self.row_height = (self.row_height * factor).clamp(0.05, 500.0);
-        self.scroll_row = row_at_focal as f64 - (focal_y as f64 / self.row_height as f64);
+        self.scroll_row = row_at_focal - (focal_y as f64 / self.row_height as f64);
     }
 
     /// Zoom horizontal only preserving focal point.
@@ -99,8 +98,7 @@ impl ViewportState {
     pub fn zoom(&mut self, factor: f32, focal_x: f32) {
         let cycle_at_focal = self.pixel_to_cycle(focal_x);
         self.pixels_per_cycle = (self.pixels_per_cycle * factor).clamp(0.01, 500.0);
-        self.scroll_cycle =
-            cycle_at_focal - (focal_x as f64 / self.pixels_per_cycle as f64);
+        self.scroll_cycle = cycle_at_focal - (focal_x as f64 / self.pixels_per_cycle as f64);
     }
 
     /// Zoom vertical only preserving focal point.
@@ -108,7 +106,7 @@ impl ViewportState {
     pub fn zoom_vertical(&mut self, factor: f32, focal_y: f32) {
         let row_at_focal = self.pixel_to_row(focal_y);
         self.row_height = (self.row_height * factor).clamp(0.05, 500.0);
-        self.scroll_row = row_at_focal as f64 - (focal_y as f64 / self.row_height as f64);
+        self.scroll_row = row_at_focal - (focal_y as f64 / self.row_height as f64);
     }
 
     /// Pan by pixel delta.

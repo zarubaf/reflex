@@ -69,20 +69,23 @@ impl Render for TimelinePane {
                     cx.notify();
                 });
             })
-            .on_mouse_down(MouseButton::Left, move |event: &MouseDownEvent, _window, cx| {
-                entity_for_down.update(cx, |pane: &mut TimelinePane, _cx| {
-                    pane.dragging = true;
-                    pane.last_mouse = Some(event.position);
-                });
-                let local_y = px_val(event.position.y) - px_val(canvas_origin.y);
-                state_for_down.update(cx, |ts, cx| {
-                    let row = ts.viewport.pixel_to_row(local_y) as usize;
-                    if row < ts.trace.row_count() {
-                        ts.selected_row = Some(row);
-                    }
-                    cx.notify();
-                });
-            })
+            .on_mouse_down(
+                MouseButton::Left,
+                move |event: &MouseDownEvent, _window, cx| {
+                    entity_for_down.update(cx, |pane: &mut TimelinePane, _cx| {
+                        pane.dragging = true;
+                        pane.last_mouse = Some(event.position);
+                    });
+                    let local_y = px_val(event.position.y) - px_val(canvas_origin.y);
+                    state_for_down.update(cx, |ts, cx| {
+                        let row = ts.viewport.pixel_to_row(local_y) as usize;
+                        if row < ts.trace.row_count() {
+                            ts.selected_row = Some(row);
+                        }
+                        cx.notify();
+                    });
+                },
+            )
             .on_mouse_move(move |event: &MouseMoveEvent, _window, cx| {
                 let mut drag_delta = None;
                 entity_for_move.update(cx, |pane: &mut TimelinePane, _cx| {
@@ -102,12 +105,15 @@ impl Render for TimelinePane {
                     });
                 }
             })
-            .on_mouse_up(MouseButton::Left, move |_event: &MouseUpEvent, _window, cx| {
-                entity_for_up.update(cx, |pane: &mut TimelinePane, _cx| {
-                    pane.dragging = false;
-                    pane.last_mouse = None;
-                });
-            })
+            .on_mouse_up(
+                MouseButton::Left,
+                move |_event: &MouseUpEvent, _window, cx| {
+                    entity_for_up.update(cx, |pane: &mut TimelinePane, _cx| {
+                        pane.dragging = false;
+                        pane.last_mouse = None;
+                    });
+                },
+            )
             .child(
                 canvas(
                     {
@@ -270,7 +276,11 @@ fn paint_timeline(
 
     // Determine LOD mode.
     let detail_mode = vp.row_height >= 3.0; // per-stage rendering
-    let padding = if detail_mode { 2.0f32.min(vp.row_height * 0.1) } else { 0.0 };
+    let padding = if detail_mode {
+        2.0f32.min(vp.row_height * 0.1)
+    } else {
+        0.0
+    };
 
     // Stage rectangles — with LOD.
     let mut last_pixel_y: i32 = -2; // track last painted pixel row to skip duplicates
@@ -350,12 +360,9 @@ fn paint_timeline(
                         underline: None,
                         strikethrough: None,
                     };
-                    let line = window.text_system().shape_line(
-                        stage_name,
-                        font_size,
-                        &[run],
-                        None,
-                    );
+                    let line = window
+                        .text_system()
+                        .shape_line(stage_name, font_size, &[run], None);
                     let text_width = px_val(line.width);
                     let text_x = x + ((w - text_width) / 2.0).max(1.0);
                     let text_y = y + padding + (h - font_size_val) / 2.0;

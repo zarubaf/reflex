@@ -63,21 +63,27 @@ impl Render for LabelPane {
                     cx.notify();
                 });
             })
-            .on_mouse_down(MouseButton::Left, move |event: &MouseDownEvent, _window, cx| {
-                let local_y = px_val(event.position.y) - px_val(canvas_origin.y);
-                state_for_click.update(cx, |ts, cx| {
-                    let row = ts.viewport.pixel_to_row(local_y) as usize;
-                    if row < ts.trace.row_count() {
-                        ts.selected_row = Some(row);
-                    }
-                    cx.notify();
-                });
-            })
+            .on_mouse_down(
+                MouseButton::Left,
+                move |event: &MouseDownEvent, _window, cx| {
+                    let local_y = px_val(event.position.y) - px_val(canvas_origin.y);
+                    state_for_click.update(cx, |ts, cx| {
+                        let row = ts.viewport.pixel_to_row(local_y) as usize;
+                        if row < ts.trace.row_count() {
+                            ts.selected_row = Some(row);
+                        }
+                        cx.notify();
+                    });
+                },
+            )
             .on_mouse_move(move |event: &MouseMoveEvent, _window, cx| {
                 let local_y = px_val(event.position.y) - px_val(canvas_origin.y);
                 let (row, max_row) = {
                     let ts = state_for_hover.read(cx);
-                    (ts.viewport.pixel_to_row(local_y) as usize, ts.trace.row_count())
+                    (
+                        ts.viewport.pixel_to_row(local_y) as usize,
+                        ts.trace.row_count(),
+                    )
                 };
                 let new_row = if row < max_row { Some(row) } else { None };
 
@@ -208,7 +214,7 @@ fn paint_labels(
             colors::TEXT_PRIMARY
         };
 
-        let font_size = px((vp.row_height - 4.0).min(12.0).max(6.0));
+        let font_size = px((vp.row_height - 4.0).clamp(6.0, 12.0));
         let text_y = y + (vp.row_height - px_val(font_size)) / 2.0;
 
         let row_str: SharedString = format!("{row}").into();
@@ -226,7 +232,9 @@ fn paint_labels(
             underline: None,
             strikethrough: None,
         };
-        let row_line = window.text_system().shape_line(row_str, font_size, &[row_run], None);
+        let row_line = window
+            .text_system()
+            .shape_line(row_str, font_size, &[row_run], None);
         let _ = row_line.paint(
             Point {
                 x: bounds.origin.x + px(4.0),
@@ -252,7 +260,9 @@ fn paint_labels(
             underline: None,
             strikethrough: None,
         };
-        let disasm_line = window.text_system().shape_line(disasm, font_size, &[disasm_run], None);
+        let disasm_line = window
+            .text_system()
+            .shape_line(disasm, font_size, &[disasm_run], None);
         let _ = disasm_line.paint(
             Point {
                 x: bounds.origin.x + px(44.0),

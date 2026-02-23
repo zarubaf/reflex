@@ -48,14 +48,11 @@ impl TraceRegistry {
 
     /// Load a trace file, auto-detecting format by extension or content.
     pub fn load_file(&self, path: &std::path::Path) -> Result<PipelineTrace, TraceError> {
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
         // Try by extension first.
         for source in &self.sources {
-            if source.file_extensions().iter().any(|e| *e == ext) {
+            if source.file_extensions().contains(&ext) {
                 let mut file = std::fs::File::open(path)?;
                 return source.load(&mut file);
             }

@@ -15,7 +15,7 @@ use gpui_component::TitleBar;
 fn force_dark_appearance() {
     use objc2::MainThreadMarker;
     use objc2_app_kit::{NSAppearance, NSAppearanceNameDarkAqua, NSApplication};
-    let mtm = MainThreadMarker::from(unsafe { MainThreadMarker::new_unchecked() });
+    let mtm = unsafe { MainThreadMarker::new_unchecked() };
     let app = NSApplication::sharedApplication(mtm);
     let dark = NSAppearance::appearanceNamed(unsafe { NSAppearanceNameDarkAqua });
     app.setAppearance(dark.as_deref());
@@ -28,7 +28,7 @@ fn set_app_icon() {
     use objc2_app_kit::{NSApplication, NSImage};
 
     let icon_bytes = include_bytes!("../resources/reflex.icns");
-    let mtm = MainThreadMarker::from(unsafe { MainThreadMarker::new_unchecked() });
+    let mtm = unsafe { MainThreadMarker::new_unchecked() };
     let app = NSApplication::sharedApplication(mtm);
 
     unsafe {
@@ -42,8 +42,7 @@ fn set_app_icon() {
 fn main() {
     let file_path = std::env::args().nth(1);
 
-    let application = Application::new()
-        .with_assets(gpui_component_assets::Assets);
+    let application = Application::new().with_assets(gpui_component_assets::Assets);
 
     application.run(move |cx| {
         gpui_component::init(cx);
@@ -96,7 +95,7 @@ fn main() {
         {
             use objc2::MainThreadMarker;
             use objc2_app_kit::{NSApplication, NSWindowSharingType};
-            let mtm = MainThreadMarker::from(unsafe { MainThreadMarker::new_unchecked() });
+            let mtm = unsafe { MainThreadMarker::new_unchecked() };
             let app = NSApplication::sharedApplication(mtm);
             for window in app.windows().iter() {
                 window.setSharingType(NSWindowSharingType::ReadOnly);

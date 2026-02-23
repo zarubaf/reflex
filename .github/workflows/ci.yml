@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release
+      - name: Test
+        run: cargo test
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwayland-dev \
+            libxkbcommon-x11-dev \
+            libvulkan-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxcb-cursor-dev \
+            libxcb-render0-dev \
+            libxcb-randr0-dev \
+            libxcb-keysyms1-dev \
+            libxcb-xkb-dev \
+            libxkbcommon-dev \
+            libglib2.0-dev \
+            libatk1.0-dev \
+            libgtk-3-dev \
+            libclang-dev \
+            cmake
+      - name: Build
+        run: cargo build --release
+      - name: Test
+        run: cargo test
+
+  clippy:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy -- -D warnings
+
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Format check
+        run: cargo fmt -- --check

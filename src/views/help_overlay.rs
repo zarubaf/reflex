@@ -77,11 +77,14 @@ impl Render for HelpOverlay {
                     _cx.notify();
                 }
             }))
-            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
-                this.visible = false;
-                window.focus(&this.parent_focus);
-                cx.notify();
-            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    this.visible = false;
+                    window.focus(&this.parent_focus);
+                    cx.notify();
+                }),
+            )
             .absolute()
             .top(px(0.0))
             .left(px(0.0))
