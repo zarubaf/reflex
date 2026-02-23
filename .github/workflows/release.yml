@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-macos-arm:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release --target aarch64-apple-darwin
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/aarch64-apple-darwin/release/reflex dist/reflex
+          cd dist && tar czf reflex-macos-aarch64.tar.gz reflex
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reflex-macos-aarch64
+          path: dist/reflex-macos-aarch64.tar.gz
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwayland-dev \
+            libxkbcommon-x11-dev \
+            libvulkan-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxcb-cursor-dev \
+            libxcb-render0-dev \
+            libxcb-randr0-dev \
+            libxcb-keysyms1-dev \
+            libxcb-xkb-dev \
+            libxkbcommon-dev \
+            libglib2.0-dev \
+            libatk1.0-dev \
+            libgtk-3-dev \
+            libclang-dev \
+            cmake
+      - name: Build
+        run: cargo build --release
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/release/reflex dist/reflex
+          cd dist && tar czf reflex-linux-x86_64.tar.gz reflex
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reflex-linux-x86_64
+          path: dist/reflex-linux-x86_64.tar.gz
+
+  release:
+    needs: [build-macos-arm, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/reflex-macos-aarch64/reflex-macos-aarch64.tar.gz
+            artifacts/reflex-linux-x86_64/reflex-linux-x86_64.tar.gz
