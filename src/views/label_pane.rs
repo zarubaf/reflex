@@ -48,6 +48,7 @@ impl Render for LabelPane {
             .overflow_hidden()
             .track_focus(&self.focus_handle)
             .on_scroll_wheel(move |event: &ScrollWheelEvent, _window, cx| {
+                cx.stop_propagation();
                 state_for_scroll.update(cx, |ts, cx| {
                     let delta = event.delta.pixel_delta(px(20.0));
                     let dy = px_val(delta.y);

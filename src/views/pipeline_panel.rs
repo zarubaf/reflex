@@ -19,6 +19,13 @@ impl PipelinePanel {
         let label_pane = cx.new(|cx| LabelPane::new(state.clone(), cx));
         let timeline_pane = cx.new(|cx| TimelinePane::new(state.clone(), cx));
 
+        // Invalidate this panel's render cache when TraceState changes,
+        // so that TabPanel's cached() wrapper re-renders us.
+        cx.observe(&state, |_this, _state, cx| {
+            cx.notify();
+        })
+        .detach();
+
         // Estimate label width from the longest disasm string.
         // Row number column ~44px + text at ~7.2px per char (Menlo 12px) + padding.
         let label_width = {
@@ -126,6 +133,14 @@ impl gpui_component::dock::Panel for PipelinePanel {
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         "Pipeline Viewer"
+    }
+
+    fn closable(&self, _cx: &App) -> bool {
+        false
+    }
+
+    fn inner_padding(&self, _cx: &App) -> bool {
+        false
     }
 
     fn dump(&self, _cx: &App) -> gpui_component::dock::PanelState {

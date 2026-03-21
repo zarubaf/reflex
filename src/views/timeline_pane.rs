@@ -76,6 +76,7 @@ impl Render for TimelinePane {
             .bg(colors::BG_PRIMARY)
             .track_focus(&self.focus_handle)
             .on_scroll_wheel(move |event: &ScrollWheelEvent, _window, cx| {
+                cx.stop_propagation();
                 let local_x = px_val(event.position.x) - px_val(canvas_origin.x);
                 let local_y = px_val(event.position.y) - px_val(canvas_origin.y) - hdr_h;
                 state_for_scroll.update(cx, |ts, cx| {

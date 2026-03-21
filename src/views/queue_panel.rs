@@ -29,10 +29,19 @@ const WAITING_COLOR: Hsla = Hsla {
     a: 1.0,
 };
 
-/// Collapsible bottom panel showing retire queue and issue queue slot occupancy.
+/// Which queue this panel displays.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum QueueKind {
+    Retire,
+    Dispatch,
+    Issue,
+}
+
+/// A single-queue tab panel. Create one per queue kind and group them as tabs.
 pub struct QueuePanel {
     state: Entity<TraceState>,
-    visible: bool,
+    focus_handle: FocusHandle,
+    kind: QueueKind,
     retire_queue_size: usize,
     dispatch_stages: Vec<StageNameIdx>,
     issue_stages: Vec<StageNameIdx>,
@@ -42,7 +51,7 @@ pub struct QueuePanel {
 }
 
 impl QueuePanel {
-    pub fn new(state: Entity<TraceState>, cx: &App) -> Self {
+    pub fn new(state: Entity<TraceState>, kind: QueueKind, cx: &mut Context<Self>) -> Self {
         let ts = state.read(cx);
 
         let retire_queue_size = ts
@@ -62,9 +71,17 @@ impl QueuePanel {
         let dq_names = Self::read_names_from_metadata(&ts.trace, "cpu.dispatch_queue_names");
         let iq_names = Self::read_names_from_metadata(&ts.trace, "cpu.issue_queue_names");
 
+        // Invalidate this panel's render cache when TraceState changes,
+        // so that TabPanel's cached() wrapper re-renders us.
+        cx.observe(&state, |_this, _state, cx| {
+            cx.notify();
+        })
+        .detach();
+
         Self {
             state,
-            visible: false,
+            focus_handle: cx.focus_handle(),
+            kind,
             retire_queue_size,
             dispatch_stages,
             issue_stages,
@@ -102,15 +119,6 @@ impl QueuePanel {
             .unwrap_or_default()
     }
 
-    pub fn toggle(&mut self, cx: &mut Context<Self>) {
-        self.visible = !self.visible;
-        cx.notify();
-    }
-
-    pub fn is_visible(&self) -> bool {
-        self.visible
-    }
-
     /// Build a clickable, highlightable row for a queue entry.
     fn queue_row(
         &self,
@@ -143,14 +151,8 @@ impl QueuePanel {
         }
         d
     }
-}
 
-impl Render for QueuePanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if !self.visible {
-            return div().id("queue-panel-hidden");
-        }
-
+    fn render_retire_queue(&self, cx: &mut Context<Self>) -> Div {
         let ts = self.state.read(cx);
         let cursor_cycle = ts.cursor_state.cursors[ts.cursor_state.active_idx]
             .cycle
@@ -171,14 +173,13 @@ impl Render for QueuePanel {
             .filter(|s| s.is_some())
             .count();
 
-        // Retire queue rows.
         let mut rq_rows: Vec<Stateful<Div>> = Vec::new();
         for (slot, entry) in occupancy.retire_queue.iter().enumerate() {
             if let Some(e) = entry {
                 let instr = &ts.trace.instructions[e.row];
                 let stage_name = ts.trace.stage_name(e.stage).to_string();
                 let stage_color = colors::stage_color(e.stage);
-                let disasm = truncate_disasm(&instr.disasm, 40);
+                let disasm = truncate_disasm(&instr.disasm, 60);
 
                 rq_rows.push(self.queue_row(
                     ("rq", slot),
@@ -200,7 +201,47 @@ impl Render for QueuePanel {
             }
         }
 
-        // Dispatch queue sections.
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_color(colors::TEXT_DIMMED)
+                    .border_b_1()
+                    .border_color(colors::GRID_LINE)
+                    .child(format!(
+                        "Retire Queue ({}/{}) @ cycle {}",
+                        rq_occupied, self.retire_queue_size, cursor_cycle
+                    )),
+            )
+            .child(
+                div()
+                    .id("rq-scroll")
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .children(rq_rows),
+            )
+    }
+
+    fn render_dispatch_queues(&self, cx: &mut Context<Self>) -> Div {
+        let ts = self.state.read(cx);
+        let cursor_cycle = ts.cursor_state.cursors[ts.cursor_state.active_idx]
+            .cycle
+            .round() as u32;
+        let selected_row = ts.selected_row;
+
+        let occupancy = ts.trace.queue_occupancy_at(
+            cursor_cycle,
+            self.retire_queue_size,
+            &self.dispatch_stages,
+            &self.issue_stages,
+            &self.retire_stages,
+        );
+
         let total_dq_entries: usize = occupancy
             .dispatch_queues
             .iter()
@@ -232,7 +273,7 @@ impl Render for QueuePanel {
 
             for (i, e) in entries.iter().enumerate() {
                 let instr = &ts.trace.instructions[e.row];
-                let disasm = truncate_disasm(&instr.disasm, 32);
+                let disasm = truncate_disasm(&instr.disasm, 50);
                 let wait_cycles = cursor_cycle.saturating_sub(instr.first_cycle);
 
                 dq_sections.push(
@@ -257,7 +298,47 @@ impl Render for QueuePanel {
             }
         }
 
-        // Issue queue sections.
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_color(colors::TEXT_DIMMED)
+                    .border_b_1()
+                    .border_color(colors::GRID_LINE)
+                    .child(format!(
+                        "Dispatch Queues ({}) @ cycle {}",
+                        total_dq_entries, cursor_cycle
+                    )),
+            )
+            .child(
+                div()
+                    .id("dq-scroll")
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .children(dq_sections),
+            )
+    }
+
+    fn render_issue_queues(&self, cx: &mut Context<Self>) -> Div {
+        let ts = self.state.read(cx);
+        let cursor_cycle = ts.cursor_state.cursors[ts.cursor_state.active_idx]
+            .cycle
+            .round() as u32;
+        let selected_row = ts.selected_row;
+
+        let occupancy = ts.trace.queue_occupancy_at(
+            cursor_cycle,
+            self.retire_queue_size,
+            &self.dispatch_stages,
+            &self.issue_stages,
+            &self.retire_stages,
+        );
+
         let total_iq_entries: usize = occupancy
             .issue_queues
             .iter()
@@ -276,22 +357,10 @@ impl Render for QueuePanel {
                 fallback.as_str()
             };
 
-            iq_sections.push(
-                div()
-                    .px_2()
-                    .py(px(2.0))
-                    .text_color(colors::TEXT_DIMMED)
-                    .border_b_1()
-                    .border_color(colors::GRID_LINE)
-                    .child(format!("{} ({})", queue_name, entries.len()))
-                    .into_any_element(),
-            );
-
             let ready_count = entries.iter().filter(|e| e.is_ready).count();
 
-            // Update section header with ready count.
-            if let Some(last) = iq_sections.last_mut() {
-                *last = div()
+            iq_sections.push(
+                div()
                     .px_2()
                     .py(px(2.0))
                     .text_color(colors::TEXT_DIMMED)
@@ -303,12 +372,12 @@ impl Render for QueuePanel {
                         ready_count,
                         entries.len()
                     ))
-                    .into_any_element();
-            }
+                    .into_any_element(),
+            );
 
             for (i, e) in entries.iter().enumerate() {
                 let instr = &ts.trace.instructions[e.row];
-                let disasm = truncate_disasm(&instr.disasm, 28);
+                let disasm = truncate_disasm(&instr.disasm, 45);
                 let wait_cycles = cursor_cycle.saturating_sub(instr.first_cycle);
 
                 let (status_label, status_color) = if e.is_ready {
@@ -344,107 +413,83 @@ impl Render for QueuePanel {
         }
 
         div()
-            .id("queue-panel")
-            .w_full()
-            .h(px(250.0))
-            .bg(colors::BG_PRIMARY)
-            .border_t_1()
-            .border_color(colors::GRID_LINE)
+            .size_full()
             .flex()
-            .flex_row()
+            .flex_col()
+            .overflow_hidden()
+            .child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_color(colors::TEXT_DIMMED)
+                    .border_b_1()
+                    .border_color(colors::GRID_LINE)
+                    .child(format!(
+                        "Issue Queues ({}) @ cycle {}",
+                        total_iq_entries, cursor_cycle
+                    )),
+            )
+            .child(
+                div()
+                    .id("iq-scroll")
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .children(iq_sections),
+            )
+    }
+}
+
+impl Render for QueuePanel {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("queue-panel")
+            .size_full()
+            .bg(colors::BG_PRIMARY)
             .text_size(px(11.0))
             .font_family("Menlo")
-            // Retire queue (left).
-            .child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .flex_col()
-                    .overflow_hidden()
-                    .child(
-                        div()
-                            .px_2()
-                            .py_1()
-                            .text_color(colors::TEXT_DIMMED)
-                            .border_b_1()
-                            .border_color(colors::GRID_LINE)
-                            .child(format!(
-                                "Retire Queue ({}/{}) @ cycle {}",
-                                rq_occupied, self.retire_queue_size, cursor_cycle
-                            )),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .map(|mut el| {
-                                el.style().overflow.y = Some(gpui::Overflow::Scroll);
-                                el
-                            })
-                            .children(rq_rows),
-                    ),
-            )
-            // Vertical divider.
-            .child(div().w(px(1.0)).h_full().bg(colors::GRID_LINE))
-            // Dispatch queues (middle).
-            .child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .flex_col()
-                    .overflow_hidden()
-                    .child(
-                        div()
-                            .px_2()
-                            .py_1()
-                            .text_color(colors::TEXT_DIMMED)
-                            .border_b_1()
-                            .border_color(colors::GRID_LINE)
-                            .child(format!(
-                                "Dispatch Queues ({}) @ cycle {}",
-                                total_dq_entries, cursor_cycle
-                            )),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .map(|mut el| {
-                                el.style().overflow.y = Some(gpui::Overflow::Scroll);
-                                el
-                            })
-                            .children(dq_sections),
-                    ),
-            )
-            // Vertical divider.
-            .child(div().w(px(1.0)).h_full().bg(colors::GRID_LINE))
-            // Issue queues (right).
-            .child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .flex_col()
-                    .overflow_hidden()
-                    .child(
-                        div()
-                            .px_2()
-                            .py_1()
-                            .text_color(colors::TEXT_DIMMED)
-                            .border_b_1()
-                            .border_color(colors::GRID_LINE)
-                            .child(format!(
-                                "Issue Queues ({}) @ cycle {}",
-                                total_iq_entries, cursor_cycle
-                            )),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .map(|mut el| {
-                                el.style().overflow.y = Some(gpui::Overflow::Scroll);
-                                el
-                            })
-                            .children(iq_sections),
-                    ),
-            )
+            .child(match self.kind {
+                QueueKind::Retire => self.render_retire_queue(cx),
+                QueueKind::Dispatch => self.render_dispatch_queues(cx),
+                QueueKind::Issue => self.render_issue_queues(cx),
+            })
+    }
+}
+
+impl Focusable for QueuePanel {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl EventEmitter<gpui_component::dock::PanelEvent> for QueuePanel {}
+
+impl gpui_component::dock::Panel for QueuePanel {
+    fn panel_name(&self) -> &'static str {
+        match self.kind {
+            QueueKind::Retire => "RetireQueue",
+            QueueKind::Dispatch => "DispatchQueues",
+            QueueKind::Issue => "IssueQueues",
+        }
+    }
+
+    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        match self.kind {
+            QueueKind::Retire => "Retire Queue",
+            QueueKind::Dispatch => "Dispatch Queues",
+            QueueKind::Issue => "Issue Queues",
+        }
+    }
+
+    fn closable(&self, _cx: &App) -> bool {
+        false
+    }
+
+    fn inner_padding(&self, _cx: &App) -> bool {
+        false
+    }
+
+    fn dump(&self, _cx: &App) -> gpui_component::dock::PanelState {
+        gpui_component::dock::PanelState::new(self)
     }
 }
 

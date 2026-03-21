@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
+use gpui_component::dock::{DockArea, DockItem, DockPlacement};
 use gpui_component::tab::{Tab, TabBar};
 use gpui_component::{Icon, IconName};
 
@@ -18,7 +19,7 @@ use crate::views::goto_bar::GotoBar;
 use crate::views::help_overlay::HelpOverlay;
 use crate::views::info_overlay::InfoOverlay;
 use crate::views::pipeline_panel::PipelinePanel;
-use crate::views::queue_panel::QueuePanel;
+use crate::views::queue_panel::{QueueKind, QueuePanel};
 use crate::views::search_bar::SearchBar;
 use crate::views::status_bar::StatusBar;
 
@@ -230,7 +231,10 @@ pub struct AppView {
     /// but a Window reference was not available (e.g., from an async spawn).
     needs_rebuild: bool,
     pipeline_panel: Entity<PipelinePanel>,
-    queue_panel: Entity<QueuePanel>,
+    retire_queue_tab: Entity<QueuePanel>,
+    dispatch_queue_tab: Entity<QueuePanel>,
+    issue_queue_tab: Entity<QueuePanel>,
+    dock_area: Entity<DockArea>,
     status_bar: Entity<StatusBar>,
     search_bar: Entity<SearchBar>,
     goto_bar: Entity<GotoBar>,
@@ -254,13 +258,33 @@ impl AppView {
         // Placeholder state for initial empty panel construction.
         let placeholder = cx.new(|_cx| TraceState::new());
 
+        let pipeline_panel = cx.new(|cx| PipelinePanel::new(placeholder.clone(), window, cx));
+        let retire_queue_tab =
+            cx.new(|cx| QueuePanel::new(placeholder.clone(), QueueKind::Retire, cx));
+        let dispatch_queue_tab =
+            cx.new(|cx| QueuePanel::new(placeholder.clone(), QueueKind::Dispatch, cx));
+        let issue_queue_tab =
+            cx.new(|cx| QueuePanel::new(placeholder.clone(), QueueKind::Issue, cx));
+        let dock_area = Self::build_dock_area(
+            &pipeline_panel,
+            &retire_queue_tab,
+            &dispatch_queue_tab,
+            &issue_queue_tab,
+            false,
+            window,
+            cx,
+        );
+
         let mut app = Self {
             tabs: Vec::new(),
             active_tab: 0,
             next_tab_id: 0,
             needs_rebuild: false,
-            pipeline_panel: cx.new(|cx| PipelinePanel::new(placeholder.clone(), window, cx)),
-            queue_panel: cx.new(|cx| QueuePanel::new(placeholder.clone(), cx)),
+            pipeline_panel,
+            retire_queue_tab,
+            dispatch_queue_tab,
+            issue_queue_tab,
+            dock_area,
             status_bar: cx.new(|_cx| StatusBar::new(placeholder.clone())),
             search_bar: cx.new(|cx| SearchBar::new(placeholder.clone(), focus_handle.clone(), cx)),
             goto_bar: cx.new(|cx| GotoBar::new(placeholder.clone(), focus_handle.clone(), cx)),
@@ -331,19 +355,64 @@ impl AppView {
         self.rebuild_panel(window, cx);
     }
 
+    /// Build a DockArea with the pipeline panel in the center and queue tabs as a bottom dock.
+    fn build_dock_area(
+        pipeline_panel: &Entity<PipelinePanel>,
+        retire_tab: &Entity<QueuePanel>,
+        dispatch_tab: &Entity<QueuePanel>,
+        issue_tab: &Entity<QueuePanel>,
+        queue_visible: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<DockArea> {
+        let pp = pipeline_panel.clone();
+        let rq = retire_tab.clone();
+        let dq = dispatch_tab.clone();
+        let iq = issue_tab.clone();
+        cx.new(|cx| {
+            let mut dock_area = DockArea::new("main", None, window, cx);
+            let weak = cx.entity().downgrade();
+            let center = DockItem::tab(pp, &weak, window, cx);
+            dock_area.set_center(center, window, cx);
+            let bottom = DockItem::h_split(
+                vec![
+                    DockItem::tab(rq, &weak, window, cx),
+                    DockItem::tab(dq, &weak, window, cx),
+                    DockItem::tab(iq, &weak, window, cx),
+                ],
+                &weak,
+                window,
+                cx,
+            );
+            dock_area.set_bottom_dock(bottom, Some(px(250.0)), queue_visible, window, cx);
+            dock_area
+        })
+    }
+
     /// Rebuild pipeline panel, status bar, search bar, and goto bar to point at the active tab's state.
     fn rebuild_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(state) = self.active_state().cloned() {
             self.pipeline_panel = cx.new(|cx| PipelinePanel::new(state.clone(), window, cx));
             // Preserve queue panel visibility across rebuilds.
-            let queue_visible = self.queue_panel.read(cx).is_visible();
-            self.queue_panel = cx.new(|cx| {
-                let mut qp = QueuePanel::new(state.clone(), cx);
-                if queue_visible {
-                    qp.toggle(cx);
-                }
-                qp
-            });
+            let queue_visible = self
+                .dock_area
+                .read(cx)
+                .is_dock_open(DockPlacement::Bottom, cx);
+            self.retire_queue_tab =
+                cx.new(|cx| QueuePanel::new(state.clone(), QueueKind::Retire, cx));
+            self.dispatch_queue_tab =
+                cx.new(|cx| QueuePanel::new(state.clone(), QueueKind::Dispatch, cx));
+            self.issue_queue_tab =
+                cx.new(|cx| QueuePanel::new(state.clone(), QueueKind::Issue, cx));
+            self.dock_area = Self::build_dock_area(
+                &self.pipeline_panel,
+                &self.retire_queue_tab,
+                &self.dispatch_queue_tab,
+                &self.issue_queue_tab,
+                queue_visible,
+                window,
+                cx,
+            );
             self.status_bar = cx.new(|_cx| StatusBar::new(state.clone()));
             let focus = self.focus_handle.clone();
             self.search_bar = cx.new(|cx| SearchBar::new(state.clone(), focus.clone(), cx));
@@ -694,10 +763,12 @@ impl AppView {
     fn handle_toggle_queues(
         &mut self,
         _: &ToggleQueues,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.queue_panel.update(cx, |qp, cx| qp.toggle(cx));
+        self.dock_area.update(cx, |da, cx| {
+            da.toggle_dock(DockPlacement::Bottom, window, cx)
+        });
     }
 }
 
@@ -858,10 +929,9 @@ impl Render for AppView {
                 div()
                     .flex_1()
                     .w_full()
-                    .overflow_hidden()
                     .relative()
                     .font_family("SF Mono, Menlo, Monaco, monospace")
-                    .child(self.pipeline_panel.clone())
+                    .child(self.dock_area.clone())
                     .child(self.search_bar.clone())
                     .child(self.goto_bar.clone())
             } else {
@@ -885,14 +955,6 @@ impl Render for AppView {
                             .text_color(colors::TEXT_ROW_NUMBER)
                             .child("or press Cmd+O to open"),
                     )
-            })
-            // Queue panel (only if tabs exist).
-            .when(has_tabs, |el| {
-                el.child(
-                    div()
-                        .font_family("SF Mono, Menlo, Monaco, monospace")
-                        .child(self.queue_panel.clone()),
-                )
             })
             // Status bar (only if tabs exist).
             .when(has_tabs, |el| {
