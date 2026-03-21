@@ -75,6 +75,11 @@ fn main() {
     application.run(move |cx| {
         gpui_component::init(cx);
         interaction::keybindings::register(cx);
+        interaction::menus::setup(cx);
+
+        cx.on_action(|_: &interaction::actions::Quit, cx: &mut App| {
+            cx.quit();
+        });
 
         #[cfg(target_os = "macos")]
         force_dark_appearance();

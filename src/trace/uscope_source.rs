@@ -246,8 +246,12 @@ fn populate_metadata(
 
     // Flags
     let mut flags = Vec::new();
-    if header.flags & F_COMPRESSED != 0 { flags.push("compressed"); }
-    if header.flags & F_INTERLEAVED_DELTAS != 0 { flags.push("interleaved"); }
+    if header.flags & F_COMPRESSED != 0 {
+        flags.push("compressed");
+    }
+    if header.flags & F_INTERLEAVED_DELTAS != 0 {
+        flags.push("interleaved");
+    }
     if header.flags & F_COMPACT_DELTAS != 0 && header.flags & F_INTERLEAVED_DELTAS == 0 {
         flags.push("compact-deltas");
     }
@@ -272,10 +276,9 @@ fn populate_metadata(
     }
 
     // Pipeline stages
-    trace.metadata.push((
-        "Pipeline".into(),
-        ids.stage_names.join(" → "),
-    ));
+    trace
+        .metadata
+        .push(("Pipeline".into(), ids.stage_names.join(" → ")));
 
     // Trace stats
     let total_us = header.total_time_ps as f64 / 1e6;
@@ -284,10 +287,9 @@ fn populate_metadata(
         "Duration".into(),
         format!("{} cycles ({:.1} µs)", total_cycles, total_us),
     ));
-    trace.metadata.push((
-        "Segments".into(),
-        format!("{}", header.num_segments),
-    ));
+    trace
+        .metadata
+        .push(("Segments".into(), format!("{}", header.num_segments)));
 
     // Schema summary
     trace.metadata.push((
@@ -306,7 +308,9 @@ fn populate_metadata(
         while st.get(count).is_some() {
             count += 1;
         }
-        trace.metadata.push(("Strings".into(), format!("{} entries", count)));
+        trace
+            .metadata
+            .push(("Strings".into(), format!("{} entries", count)));
     }
 }
 

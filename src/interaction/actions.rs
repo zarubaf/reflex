@@ -24,4 +24,5 @@ actions!([
     NextCursor,
     PrevCursor,
     GotoCycle,
+    Quit,
 ]);
