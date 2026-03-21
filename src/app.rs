@@ -297,25 +297,8 @@ impl AppView {
         if let Some(ref path) = file_path {
             // CLI argument: open file in a tab.
             app.open_in_new_tab(std::path::Path::new(path), window, cx);
-        } else if cfg!(debug_assertions) {
-            // Debug builds: open a generated trace for quick iteration.
-            let trace = generator::generate(&GeneratorConfig {
-                instruction_count: 10_000,
-                ..Default::default()
-            });
-            let state = cx.new(|_cx| TraceState::new());
-            state.update(cx, |ts, _cx| ts.load_trace(trace));
-            let id = app.next_tab_id;
-            app.next_tab_id += 1;
-            app.tabs.push(TabEntry {
-                id,
-                file_path: None,
-                state,
-            });
-            app.active_tab = 0;
-            app.rebuild_panel(window, cx);
         }
-        // Release builds with no file argument: start empty.
+        // No file argument: start empty (drop a trace file or press Cmd+O).
 
         app
     }
