@@ -190,6 +190,7 @@ pub fn generate(config: &GeneratorConfig) -> PipelineTrace {
                 rbid: None,
                 iq_id: None,
                 dq_id: None,
+                ready_cycle: None,
                 disasm,
                 tooltip: String::new(),
                 stage_range: stage_start_idx..stage_end_idx,

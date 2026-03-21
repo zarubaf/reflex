@@ -13,6 +13,22 @@ const SELECTED_BG: Hsla = Hsla {
     a: 1.0,
 };
 
+/// Ready indicator color (green).
+const READY_COLOR: Hsla = Hsla {
+    h: 120.0 / 360.0,
+    s: 0.7,
+    l: 0.45,
+    a: 1.0,
+};
+
+/// Waiting indicator color (red/orange).
+const WAITING_COLOR: Hsla = Hsla {
+    h: 0.0,
+    s: 0.7,
+    l: 0.55,
+    a: 1.0,
+};
+
 /// Collapsible bottom panel showing retire queue and issue queue slot occupancy.
 pub struct QueuePanel {
     state: Entity<TraceState>,
@@ -271,12 +287,35 @@ impl Render for QueuePanel {
                     .into_any_element(),
             );
 
+            let ready_count = entries.iter().filter(|e| e.is_ready).count();
+
+            // Update section header with ready count.
+            if let Some(last) = iq_sections.last_mut() {
+                *last = div()
+                    .px_2()
+                    .py(px(2.0))
+                    .text_color(colors::TEXT_DIMMED)
+                    .border_b_1()
+                    .border_color(colors::GRID_LINE)
+                    .child(format!(
+                        "{} ({}/{} ready)",
+                        queue_name,
+                        ready_count,
+                        entries.len()
+                    ))
+                    .into_any_element();
+            }
+
             for (i, e) in entries.iter().enumerate() {
                 let instr = &ts.trace.instructions[e.row];
-                let stage_name = ts.trace.stage_name(e.stage).to_string();
-                let stage_color = colors::stage_color(e.stage);
-                let disasm = truncate_disasm(&instr.disasm, 32);
+                let disasm = truncate_disasm(&instr.disasm, 28);
                 let wait_cycles = cursor_cycle.saturating_sub(instr.first_cycle);
+
+                let (status_label, status_color) = if e.is_ready {
+                    ("rdy", READY_COLOR)
+                } else {
+                    ("wait", WAITING_COLOR)
+                };
 
                 iq_sections.push(
                     self.queue_row(
@@ -284,7 +323,10 @@ impl Render for QueuePanel {
                         e.row,
                         selected_row,
                         vec![
-                            div().w(px(24.0)).text_color(stage_color).child(stage_name),
+                            div()
+                                .w(px(28.0))
+                                .text_color(status_color)
+                                .child(status_label.to_string()),
                             div()
                                 .flex_1()
                                 .text_color(colors::TEXT_PRIMARY)

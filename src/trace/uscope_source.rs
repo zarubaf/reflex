@@ -46,6 +46,7 @@ struct CpuProtocolIds {
     field_rbid: Option<u16>,
     field_iq_id: Option<u16>,
     field_dq_id: Option<u16>,
+    field_ready_time_ps: Option<u16>,
     stage_transition_event_id: u16,
     annotate_event_id: u16,
     dependency_event_id: u16,
@@ -85,6 +86,7 @@ fn resolve_cpu_protocol(reader: &Reader) -> Result<CpuProtocolIds, TraceError> {
     let field_rbid = find_field_index(schema, entities_storage, "rbid").ok();
     let field_iq_id = find_field_index(schema, entities_storage, "iq_id").ok();
     let field_dq_id = find_field_index(schema, entities_storage, "dq_id").ok();
+    let field_ready_time_ps = find_field_index(schema, entities_storage, "ready_time_ps").ok();
 
     // Find events by name in the CPU scope
     let find_event = |name: &str| -> Result<u16, TraceError> {
@@ -113,6 +115,7 @@ fn resolve_cpu_protocol(reader: &Reader) -> Result<CpuProtocolIds, TraceError> {
         field_rbid,
         field_iq_id,
         field_dq_id,
+        field_ready_time_ps,
         stage_transition_event_id,
         annotate_event_id,
         dependency_event_id,
@@ -178,6 +181,7 @@ struct InstrBuilder {
     rbid: Option<u32>,
     iq_id: Option<u32>,
     dq_id: Option<u32>,
+    ready_time_ps: Option<u64>,
     has_disasm_annotation: bool,
     disasm: String,
     tooltip: String,
@@ -198,6 +202,7 @@ impl InstrBuilder {
             rbid: None,
             iq_id: None,
             dq_id: None,
+            ready_time_ps: None,
             has_disasm_annotation: false,
             disasm: format!("0x{:08x}", pc),
             tooltip: String::new(),
@@ -451,6 +456,13 @@ fn parse_uscope(path: &Path) -> Result<PipelineTrace, TraceError> {
                                         b.dq_id = Some(op.value as u32);
                                     }
                                 }
+                            } else if Some(op.field_index) == ids.field_ready_time_ps {
+                                // Store ready time
+                                if let Some(&eid) = slot_to_entity.get(&op.slot) {
+                                    if let Some(b) = builders.get_mut(&eid) {
+                                        b.ready_time_ps = Some(op.value);
+                                    }
+                                }
                             }
                         }
                         DA_SLOT_CLEAR => {
@@ -580,6 +592,7 @@ fn parse_uscope(path: &Path) -> Result<PipelineTrace, TraceError> {
             rbid: b.rbid,
             iq_id: b.iq_id,
             dq_id: b.dq_id,
+            ready_cycle: b.ready_time_ps.map(|t| (t / ids.period_ps) as u32),
             disasm: b.disasm,
             tooltip: b.tooltip,
             stage_range: stage_start..stage_end,

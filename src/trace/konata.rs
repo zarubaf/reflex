@@ -288,6 +288,7 @@ fn parse_konata(reader: &mut dyn Read) -> Result<PipelineTrace, TraceError> {
                 rbid: None,
                 iq_id: None,
                 dq_id: None,
+                ready_cycle: None,
                 disasm: builder.disasm,
                 tooltip: builder.tooltip,
                 stage_range: stage_start..stage_end,

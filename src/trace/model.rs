@@ -54,6 +54,8 @@ pub struct InstructionData {
     pub iq_id: Option<u32>,
     /// Dispatch queue ID (index into cpu.dispatch_queue_names). `None` if unknown.
     pub dq_id: Option<u32>,
+    /// Cycle at which the instruction became ready in the issue queue. `None` if not yet ready.
+    pub ready_cycle: Option<u32>,
     pub disasm: String,
     pub tooltip: String,
     pub stage_range: Range<u32>,
@@ -69,6 +71,8 @@ pub struct QueueSlotEntry {
     pub row: usize,
     /// Current stage name index at the query cycle.
     pub stage: StageNameIdx,
+    /// Whether the instruction is ready to issue (all operands available).
+    pub is_ready: bool,
 }
 
 /// Queue occupancy at a specific cycle.
@@ -206,11 +210,16 @@ impl PipelineTrace {
                 None => continue,
             };
 
+            let is_ready = instr
+                .ready_cycle
+                .map(|rc| rc <= cycle)
+                .unwrap_or(false);
+
             // Check if in retire queue (any stage from Al through Cp).
             if retire_stages.contains(&stage) {
                 if let Some(rbid) = instr.rbid {
                     let slot = rbid as usize % retire_queue.len().max(1);
-                    retire_queue[slot] = Some(QueueSlotEntry { row, stage });
+                    retire_queue[slot] = Some(QueueSlotEntry { row, stage, is_ready });
                 }
             }
 
@@ -220,7 +229,7 @@ impl PipelineTrace {
                 dq_map
                     .entry(dq_id)
                     .or_default()
-                    .push(QueueSlotEntry { row, stage });
+                    .push(QueueSlotEntry { row, stage, is_ready });
             }
 
             // Check if in issue queue (Is stage).
@@ -229,7 +238,7 @@ impl PipelineTrace {
                 iq_map
                     .entry(iq_id)
                     .or_default()
-                    .push(QueueSlotEntry { row, stage });
+                    .push(QueueSlotEntry { row, stage, is_ready });
             }
         }
 
@@ -300,6 +309,7 @@ mod tests {
             rbid: None,
             iq_id: None,
             dq_id: None,
+            ready_cycle: None,
             disasm: "add x1, x2, x3".to_string(),
             tooltip: String::new(),
             stage_range: 0..0,
@@ -314,6 +324,7 @@ mod tests {
             rbid: None,
             iq_id: None,
             dq_id: None,
+            ready_cycle: None,
             disasm: "sub x4, x5, x6".to_string(),
             tooltip: String::new(),
             stage_range: 0..0,
@@ -354,6 +365,7 @@ mod tests {
             rbid: None,
             iq_id: None,
             dq_id: None,
+            ready_cycle: None,
             disasm: "nop".to_string(),
             tooltip: String::new(),
             stage_range: 0..2,
