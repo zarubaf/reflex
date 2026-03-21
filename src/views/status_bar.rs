@@ -50,6 +50,22 @@ impl Render for StatusBar {
             String::new()
         };
 
+        let cursor_info = if !ts.cursor_state.cursors.is_empty() {
+            let active = &ts.cursor_state.cursors[ts.cursor_state.active_idx];
+            if ts.cursor_state.cursors.len() > 1 {
+                format!(
+                    "Cursor: {:.0} [{}/{}]",
+                    active.cycle,
+                    ts.cursor_state.active_idx + 1,
+                    ts.cursor_state.cursors.len()
+                )
+            } else {
+                format!("Cursor: {:.0}", active.cycle)
+            }
+        } else {
+            String::new()
+        };
+
         div()
             .id("status-bar")
             .h(px(24.0))
@@ -70,7 +86,8 @@ impl Render for StatusBar {
                     .child(cycle_info)
                     .child(row_info)
                     .child(zoom_info)
-                    .child(sel_info),
+                    .child(sel_info)
+                    .child(cursor_info),
             )
             .child(div().flex().items_center().gap_2().child(fps_info))
     }

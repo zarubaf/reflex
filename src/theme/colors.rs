@@ -170,6 +170,64 @@ pub fn stage_color(stage_name_idx: u16) -> Hsla {
     STAGE_PALETTE[stage_name_idx as usize % STAGE_PALETTE.len()]
 }
 
+/// Cursor color palette — warm/bright colors that contrast with blue-teal stages.
+pub const CURSOR_PALETTE: &[Hsla] = &[
+    // Amber/Gold
+    Hsla {
+        h: 42.0 / 360.0,
+        s: 0.90,
+        l: 0.55,
+        a: 1.0,
+    },
+    // Coral/Salmon
+    Hsla {
+        h: 12.0 / 360.0,
+        s: 0.85,
+        l: 0.60,
+        a: 1.0,
+    },
+    // Mint/Cyan
+    Hsla {
+        h: 165.0 / 360.0,
+        s: 0.70,
+        l: 0.55,
+        a: 1.0,
+    },
+    // Lavender
+    Hsla {
+        h: 265.0 / 360.0,
+        s: 0.65,
+        l: 0.65,
+        a: 1.0,
+    },
+    // Lime
+    Hsla {
+        h: 90.0 / 360.0,
+        s: 0.70,
+        l: 0.55,
+        a: 1.0,
+    },
+    // Rose
+    Hsla {
+        h: 340.0 / 360.0,
+        s: 0.80,
+        l: 0.60,
+        a: 1.0,
+    },
+];
+
+/// Get cursor color at full opacity (active cursor).
+pub fn cursor_color(color_idx: usize) -> Hsla {
+    CURSOR_PALETTE[color_idx % CURSOR_PALETTE.len()]
+}
+
+/// Get cursor color at reduced opacity (inactive cursor).
+pub fn cursor_color_inactive(color_idx: usize) -> Hsla {
+    let mut c = cursor_color(color_idx);
+    c.a = 0.6;
+    c
+}
+
 /// Darken a stage color for flushed instructions.
 pub fn stage_color_flushed(stage_name_idx: u16) -> Hsla {
     let mut c = stage_color(stage_name_idx);

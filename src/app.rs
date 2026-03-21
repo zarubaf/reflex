@@ -27,6 +27,69 @@ pub struct TooltipHover {
     pub position: gpui::Point<gpui::Pixels>,
 }
 
+/// A single cycle cursor.
+#[derive(Clone)]
+pub struct Cursor {
+    /// Sub-cycle precision position.
+    pub cycle: f64,
+    /// Index into CURSOR_PALETTE.
+    pub color_idx: usize,
+}
+
+/// State for multicursor support.
+#[derive(Clone)]
+pub struct CursorState {
+    pub cursors: Vec<Cursor>,
+    pub active_idx: usize,
+    next_color: usize,
+}
+
+impl CursorState {
+    pub fn new() -> Self {
+        Self {
+            cursors: vec![Cursor {
+                cycle: 0.0,
+                color_idx: 0,
+            }],
+            active_idx: 0,
+            next_color: 1,
+        }
+    }
+
+    pub fn add_cursor(&mut self, cycle: f64) {
+        let color_idx = self.next_color % colors::CURSOR_PALETTE.len();
+        self.next_color += 1;
+        self.cursors.push(Cursor { cycle, color_idx });
+        self.active_idx = self.cursors.len() - 1;
+    }
+
+    pub fn remove_active(&mut self) {
+        if self.cursors.len() <= 1 {
+            return;
+        }
+        self.cursors.remove(self.active_idx);
+        if self.active_idx >= self.cursors.len() {
+            self.active_idx = self.cursors.len() - 1;
+        }
+    }
+
+    pub fn next(&mut self) {
+        if !self.cursors.is_empty() {
+            self.active_idx = (self.active_idx + 1) % self.cursors.len();
+        }
+    }
+
+    pub fn prev(&mut self) {
+        if !self.cursors.is_empty() {
+            self.active_idx = if self.active_idx == 0 {
+                self.cursors.len() - 1
+            } else {
+                self.active_idx - 1
+            };
+        }
+    }
+}
+
 /// Shared application state — single entity observed by all panels.
 pub struct TraceState {
     pub trace: PipelineTrace,
@@ -34,6 +97,8 @@ pub struct TraceState {
     pub selected_row: Option<usize>,
     /// Active tooltip hover info, if any.
     pub tooltip_hover: Option<TooltipHover>,
+    /// Multicursor state.
+    pub cursor_state: CursorState,
     /// FPS tracking.
     pub frame_times: VecDeque<Instant>,
     pub fps: f64,
@@ -46,6 +111,7 @@ impl TraceState {
             viewport: ViewportState::new(),
             selected_row: None,
             tooltip_hover: None,
+            cursor_state: CursorState::new(),
             frame_times: VecDeque::new(),
             fps: 0.0,
         }
@@ -57,6 +123,7 @@ impl TraceState {
         self.viewport.scroll_cycle = 0.0;
         self.viewport.scroll_row = 0.0;
         self.selected_row = None;
+        self.cursor_state = CursorState::new();
         self.trace = trace;
     }
 
@@ -506,6 +573,41 @@ impl AppView {
             self.activate_tab(prev, window, cx);
         }
     }
+
+    fn handle_add_cursor(&mut self, _: &AddCursor, _window: &mut Window, cx: &mut Context<Self>) {
+        self.with_active_state(cx, |ts, cx| {
+            let center_cycle = ts.viewport.scroll_cycle
+                + ts.viewport.view_width as f64 / (2.0 * ts.viewport.pixels_per_cycle as f64);
+            ts.cursor_state.add_cursor(center_cycle);
+            cx.notify();
+        });
+    }
+
+    fn handle_remove_cursor(
+        &mut self,
+        _: &RemoveCursor,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.with_active_state(cx, |ts, cx| {
+            ts.cursor_state.remove_active();
+            cx.notify();
+        });
+    }
+
+    fn handle_next_cursor(&mut self, _: &NextCursor, _window: &mut Window, cx: &mut Context<Self>) {
+        self.with_active_state(cx, |ts, cx| {
+            ts.cursor_state.next();
+            cx.notify();
+        });
+    }
+
+    fn handle_prev_cursor(&mut self, _: &PrevCursor, _window: &mut Window, cx: &mut Context<Self>) {
+        self.with_active_state(cx, |ts, cx| {
+            ts.cursor_state.prev();
+            cx.notify();
+        });
+    }
 }
 
 impl Focusable for AppView {
@@ -632,6 +734,10 @@ impl Render for AppView {
             .on_action(cx.listener(Self::handle_close_tab))
             .on_action(cx.listener(Self::handle_next_tab))
             .on_action(cx.listener(Self::handle_prev_tab))
+            .on_action(cx.listener(Self::handle_add_cursor))
+            .on_action(cx.listener(Self::handle_remove_cursor))
+            .on_action(cx.listener(Self::handle_next_cursor))
+            .on_action(cx.listener(Self::handle_prev_cursor))
             // File drag & drop onto window — opens in new tab.
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
                 if let Some(path) = paths.paths().first() {

@@ -22,6 +22,13 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("Cmd + R", "Reload trace"),
     ("Cmd + G", "Generate new trace"),
     ("", ""),
+    ("Cursors", ""),
+    ("Click", "Move active cursor"),
+    ("Cmd + M", "Add cursor"),
+    ("Cmd + Shift + M", "Remove active cursor"),
+    ("[ / ]", "Prev / next cursor"),
+    ("Drag head", "Reposition cursor"),
+    ("", ""),
     ("?", "Toggle this help"),
 ];
 

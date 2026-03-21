@@ -21,5 +21,9 @@ pub fn register(cx: &mut App) {
         KeyBinding::new("cmd-w", CloseTab, None),
         KeyBinding::new("ctrl-tab", NextTab, None),
         KeyBinding::new("ctrl-shift-tab", PrevTab, None),
+        KeyBinding::new("cmd-m", AddCursor, None),
+        KeyBinding::new("cmd-shift-m", RemoveCursor, None),
+        KeyBinding::new("[", PrevCursor, None),
+        KeyBinding::new("]", NextCursor, None),
     ]);
 }

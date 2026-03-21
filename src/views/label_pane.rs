@@ -3,6 +3,7 @@ use gpui::*;
 use crate::app::{TooltipHover, TraceState};
 use crate::theme::colors;
 use crate::trace::model::RetireStatus;
+use crate::views::timeline_pane::header_height;
 
 pub struct LabelPane {
     state: Entity<TraceState>,
@@ -38,6 +39,7 @@ impl Render for LabelPane {
         let entity_for_hover = cx.entity().clone();
         let entity_for_leave = cx.entity().clone();
         let canvas_origin = self.canvas_origin;
+        let hdr_h = header_height(self.state.read(cx).cursor_state.cursors.len());
 
         div()
             .id("label-pane")
@@ -66,7 +68,7 @@ impl Render for LabelPane {
             .on_mouse_down(
                 MouseButton::Left,
                 move |event: &MouseDownEvent, _window, cx| {
-                    let local_y = px_val(event.position.y) - px_val(canvas_origin.y);
+                    let local_y = px_val(event.position.y) - px_val(canvas_origin.y) - hdr_h;
                     state_for_click.update(cx, |ts, cx| {
                         let row = ts.viewport.pixel_to_row(local_y) as usize;
                         if row < ts.trace.row_count() {
@@ -77,7 +79,7 @@ impl Render for LabelPane {
                 },
             )
             .on_mouse_move(move |event: &MouseMoveEvent, _window, cx| {
-                let local_y = px_val(event.position.y) - px_val(canvas_origin.y);
+                let local_y = px_val(event.position.y) - px_val(canvas_origin.y) - hdr_h;
                 let (row, max_row) = {
                     let ts = state_for_hover.read(cx);
                     (
@@ -131,7 +133,8 @@ impl Render for LabelPane {
                                 pane.canvas_origin = bounds.origin;
                             });
                             state_pre.update(cx, |ts, _cx| {
-                                ts.viewport.view_height = px_val(bounds.size.height);
+                                ts.viewport.view_height =
+                                    (px_val(bounds.size.height) - hdr_h).max(0.0);
                             });
                             bounds
                         }
@@ -141,7 +144,7 @@ impl Render for LabelPane {
                             let ts = state.read(cx);
                             (ts.viewport.clone(), ts.selected_row, ts.trace.clone())
                         };
-                        paint_labels(bounds, &trace, &viewport, selected_row, window, cx);
+                        paint_labels(bounds, &trace, &viewport, selected_row, hdr_h, window, cx);
                     },
                 )
                 .size_full(),
@@ -149,132 +152,166 @@ impl Render for LabelPane {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn paint_labels(
     bounds: Bounds<Pixels>,
     trace: &crate::trace::model::PipelineTrace,
     vp: &crate::interaction::viewport::ViewportState,
     selected_row: Option<usize>,
+    hdr_h: f32,
     window: &mut Window,
     cx: &mut App,
 ) {
     let canvas_h = px_val(bounds.size.height);
+    let content_h = (canvas_h - hdr_h).max(0.0);
 
     window.paint_quad(fill(bounds, colors::BG_SECONDARY));
+
+    // Header-aligned top strip (empty space matching the timeline header).
+    window.paint_quad(fill(
+        Bounds {
+            origin: bounds.origin,
+            size: Size {
+                width: bounds.size.width,
+                height: px(hdr_h),
+            },
+        },
+        colors::BG_SECONDARY,
+    ));
 
     if trace.row_count() == 0 {
         return;
     }
 
-    let (row_start, row_end) = vp.visible_row_range();
+    let content_origin_y = bounds.origin.y + px(hdr_h);
 
-    let mut last_pixel_y: i32 = -2;
-    let mut row = row_start;
-    while row < row_end && row < trace.row_count() {
-        let y = vp.row_to_pixel(row as f64);
-        if y + vp.row_height < 0.0 || y > canvas_h {
-            row += 1;
-            continue;
-        }
+    // Clip label content to the area below the header.
+    let content_clip = ContentMask {
+        bounds: Bounds {
+            origin: Point {
+                x: bounds.origin.x,
+                y: content_origin_y,
+            },
+            size: Size {
+                width: bounds.size.width,
+                height: px(content_h),
+            },
+        },
+    };
 
-        let pixel_y = y as i32;
-        if vp.row_height < 1.0 && pixel_y == last_pixel_y {
-            row += 1;
-            continue;
-        }
-        last_pixel_y = pixel_y;
+    window.with_content_mask(Some(content_clip), |window| {
+        let (row_start, row_end) = vp.visible_row_range();
 
-        let instr = &trace.instructions[row];
-        let is_flushed = instr.retire_status == RetireStatus::Flushed;
-        let is_selected = selected_row == Some(row);
+        let mut last_pixel_y: i32 = -2;
+        let mut row = row_start;
+        while row < row_end && row < trace.row_count() {
+            let y = vp.row_to_pixel(row as f64);
+            if y + vp.row_height < 0.0 || y > content_h {
+                row += 1;
+                continue;
+            }
 
-        if is_selected {
-            window.paint_quad(fill(
-                Bounds {
-                    origin: Point {
-                        x: bounds.origin.x,
-                        y: bounds.origin.y + px(y),
+            let pixel_y = y as i32;
+            if vp.row_height < 1.0 && pixel_y == last_pixel_y {
+                row += 1;
+                continue;
+            }
+            last_pixel_y = pixel_y;
+
+            let instr = &trace.instructions[row];
+            let is_flushed = instr.retire_status == RetireStatus::Flushed;
+            let is_selected = selected_row == Some(row);
+
+            if is_selected {
+                window.paint_quad(fill(
+                    Bounds {
+                        origin: Point {
+                            x: bounds.origin.x,
+                            y: content_origin_y + px(y),
+                        },
+                        size: Size {
+                            width: bounds.size.width,
+                            height: px(vp.row_height.max(1.0)),
+                        },
                     },
-                    size: Size {
-                        width: bounds.size.width,
-                        height: px(vp.row_height.max(1.0)),
-                    },
+                    colors::SELECTION_BG,
+                ));
+            }
+
+            if vp.row_height < 8.0 {
+                row += 1;
+                continue;
+            }
+
+            let text_color = if is_flushed {
+                colors::TEXT_DIMMED
+            } else {
+                colors::TEXT_PRIMARY
+            };
+
+            let font_size = px((vp.row_height - 4.0).clamp(6.0, 12.0));
+            let text_y = y + (vp.row_height - px_val(font_size)) / 2.0;
+
+            let row_str: SharedString = format!("{row}").into();
+            let row_run = TextRun {
+                len: row_str.len(),
+                font: Font {
+                    family: "Menlo".into(),
+                    features: Default::default(),
+                    fallbacks: None,
+                    weight: FontWeight::NORMAL,
+                    style: FontStyle::Normal,
                 },
-                colors::SELECTION_BG,
-            ));
-        }
+                color: colors::TEXT_ROW_NUMBER,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let row_line = window
+                .text_system()
+                .shape_line(row_str, font_size, &[row_run], None);
+            let _ = row_line.paint(
+                Point {
+                    x: bounds.origin.x + px(4.0),
+                    y: content_origin_y + px(text_y),
+                },
+                font_size,
+                window,
+                cx,
+            );
 
-        if vp.row_height < 8.0 {
+            let disasm: SharedString = instr.disasm.clone().into();
+            let disasm_run = TextRun {
+                len: disasm.len(),
+                font: Font {
+                    family: "Menlo".into(),
+                    features: Default::default(),
+                    fallbacks: None,
+                    weight: FontWeight::NORMAL,
+                    style: FontStyle::Normal,
+                },
+                color: text_color,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let disasm_line =
+                window
+                    .text_system()
+                    .shape_line(disasm, font_size, &[disasm_run], None);
+            let _ = disasm_line.paint(
+                Point {
+                    x: bounds.origin.x + px(44.0),
+                    y: content_origin_y + px(text_y),
+                },
+                font_size,
+                window,
+                cx,
+            );
+
             row += 1;
-            continue;
         }
-
-        let text_color = if is_flushed {
-            colors::TEXT_DIMMED
-        } else {
-            colors::TEXT_PRIMARY
-        };
-
-        let font_size = px((vp.row_height - 4.0).clamp(6.0, 12.0));
-        let text_y = y + (vp.row_height - px_val(font_size)) / 2.0;
-
-        let row_str: SharedString = format!("{row}").into();
-        let row_run = TextRun {
-            len: row_str.len(),
-            font: Font {
-                family: "Menlo".into(),
-                features: Default::default(),
-                fallbacks: None,
-                weight: FontWeight::NORMAL,
-                style: FontStyle::Normal,
-            },
-            color: colors::TEXT_ROW_NUMBER,
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        };
-        let row_line = window
-            .text_system()
-            .shape_line(row_str, font_size, &[row_run], None);
-        let _ = row_line.paint(
-            Point {
-                x: bounds.origin.x + px(4.0),
-                y: bounds.origin.y + px(text_y),
-            },
-            font_size,
-            window,
-            cx,
-        );
-
-        let disasm: SharedString = instr.disasm.clone().into();
-        let disasm_run = TextRun {
-            len: disasm.len(),
-            font: Font {
-                family: "Menlo".into(),
-                features: Default::default(),
-                fallbacks: None,
-                weight: FontWeight::NORMAL,
-                style: FontStyle::Normal,
-            },
-            color: text_color,
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        };
-        let disasm_line = window
-            .text_system()
-            .shape_line(disasm, font_size, &[disasm_run], None);
-        let _ = disasm_line.paint(
-            Point {
-                x: bounds.origin.x + px(44.0),
-                y: bounds.origin.y + px(text_y),
-            },
-            font_size,
-            window,
-            cx,
-        );
-
-        row += 1;
-    }
+    }); // end content_clip
 }
 
 impl Focusable for LabelPane {

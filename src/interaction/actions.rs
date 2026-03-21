@@ -18,4 +18,8 @@ actions!([
     CloseTab,
     NextTab,
     PrevTab,
+    AddCursor,
+    RemoveCursor,
+    NextCursor,
+    PrevCursor,
 ]);
