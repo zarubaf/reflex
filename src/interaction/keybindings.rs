@@ -28,5 +28,6 @@ pub fn register(cx: &mut App) {
         KeyBinding::new("cmd-l", GotoCycle, None),
         KeyBinding::new("cmd-q", Quit, None),
         KeyBinding::new("cmd-i", ToggleInfo, None),
+        KeyBinding::new("cmd-b", ToggleQueues, None),
     ]);
 }

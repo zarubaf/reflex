@@ -18,6 +18,7 @@ use crate::views::goto_bar::GotoBar;
 use crate::views::help_overlay::HelpOverlay;
 use crate::views::info_overlay::InfoOverlay;
 use crate::views::pipeline_panel::PipelinePanel;
+use crate::views::queue_panel::QueuePanel;
 use crate::views::search_bar::SearchBar;
 use crate::views::status_bar::StatusBar;
 
@@ -229,6 +230,7 @@ pub struct AppView {
     /// but a Window reference was not available (e.g., from an async spawn).
     needs_rebuild: bool,
     pipeline_panel: Entity<PipelinePanel>,
+    queue_panel: Entity<QueuePanel>,
     status_bar: Entity<StatusBar>,
     search_bar: Entity<SearchBar>,
     goto_bar: Entity<GotoBar>,
@@ -258,6 +260,7 @@ impl AppView {
             next_tab_id: 0,
             needs_rebuild: false,
             pipeline_panel: cx.new(|cx| PipelinePanel::new(placeholder.clone(), window, cx)),
+            queue_panel: cx.new(|cx| QueuePanel::new(placeholder.clone(), cx)),
             status_bar: cx.new(|_cx| StatusBar::new(placeholder.clone())),
             search_bar: cx.new(|cx| SearchBar::new(placeholder.clone(), focus_handle.clone(), cx)),
             goto_bar: cx.new(|cx| GotoBar::new(placeholder.clone(), focus_handle.clone(), cx)),
@@ -332,6 +335,15 @@ impl AppView {
     fn rebuild_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(state) = self.active_state().cloned() {
             self.pipeline_panel = cx.new(|cx| PipelinePanel::new(state.clone(), window, cx));
+            // Preserve queue panel visibility across rebuilds.
+            let queue_visible = self.queue_panel.read(cx).is_visible();
+            self.queue_panel = cx.new(|cx| {
+                let mut qp = QueuePanel::new(state.clone(), cx);
+                if queue_visible {
+                    qp.toggle(cx);
+                }
+                qp
+            });
             self.status_bar = cx.new(|_cx| StatusBar::new(state.clone()));
             let focus = self.focus_handle.clone();
             self.search_bar = cx.new(|cx| SearchBar::new(state.clone(), focus.clone(), cx));
@@ -678,6 +690,15 @@ impl AppView {
             cx.notify();
         });
     }
+
+    fn handle_toggle_queues(
+        &mut self,
+        _: &ToggleQueues,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.queue_panel.update(cx, |qp, cx| qp.toggle(cx));
+    }
 }
 
 impl Focusable for AppView {
@@ -815,6 +836,7 @@ impl Render for AppView {
             .on_action(cx.listener(Self::handle_remove_cursor))
             .on_action(cx.listener(Self::handle_next_cursor))
             .on_action(cx.listener(Self::handle_prev_cursor))
+            .on_action(cx.listener(Self::handle_toggle_queues))
             // File drag & drop onto window — opens in new tab.
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
                 if let Some(path) = paths.paths().first() {
@@ -863,6 +885,14 @@ impl Render for AppView {
                             .text_color(colors::TEXT_ROW_NUMBER)
                             .child("or press Cmd+O to open"),
                     )
+            })
+            // Queue panel (only if tabs exist).
+            .when(has_tabs, |el| {
+                el.child(
+                    div()
+                        .font_family("SF Mono, Menlo, Monaco, monospace")
+                        .child(self.queue_panel.clone()),
+                )
             })
             // Status bar (only if tabs exist).
             .when(has_tabs, |el| {

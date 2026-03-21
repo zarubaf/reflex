@@ -24,5 +24,6 @@ actions!([
     NextCursor,
     PrevCursor,
     GotoCycle,
+    ToggleQueues,
     Quit,
 ]);

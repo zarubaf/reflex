@@ -48,12 +48,38 @@ pub struct InstructionData {
     pub id: u32,
     pub sim_id: u64,
     pub thread_id: u16,
+    /// Retire buffer ID (slot in the retire queue). `None` if not yet allocated.
+    pub rbid: Option<u32>,
+    /// Issue queue ID (index into cpu.issue_queue_names). `None` if unknown.
+    pub iq_id: Option<u32>,
+    /// Dispatch queue ID (index into cpu.dispatch_queue_names). `None` if unknown.
+    pub dq_id: Option<u32>,
     pub disasm: String,
     pub tooltip: String,
     pub stage_range: Range<u32>,
     pub retire_status: RetireStatus,
     pub first_cycle: u32,
     pub last_cycle: u32,
+}
+
+/// Occupancy snapshot of a queue at a specific cycle.
+#[derive(Debug, Clone)]
+pub struct QueueSlotEntry {
+    /// Row index into `PipelineTrace::instructions`.
+    pub row: usize,
+    /// Current stage name index at the query cycle.
+    pub stage: StageNameIdx,
+}
+
+/// Queue occupancy at a specific cycle.
+#[derive(Debug, Clone, Default)]
+pub struct QueueOccupancy {
+    /// Retire queue: indexed by RBID → Option<QueueSlotEntry>.
+    pub retire_queue: Vec<Option<QueueSlotEntry>>,
+    /// Dispatch queue entries grouped by queue ID.
+    pub dispatch_queues: Vec<(u32, Vec<QueueSlotEntry>)>,
+    /// Issue queue entries grouped by queue ID.
+    pub issue_queues: Vec<(u32, Vec<QueueSlotEntry>)>,
 }
 
 /// The full pipeline trace — owns all data in SoA layout.
@@ -137,6 +163,89 @@ impl PipelineTrace {
             .unwrap_or(0)
     }
 
+    /// Look up a stage name index by name, if it exists.
+    pub fn stage_name_idx(&self, name: &str) -> Option<StageNameIdx> {
+        self.stage_name_map.get(name).copied()
+    }
+
+    /// Compute queue occupancy at a given cycle.
+    ///
+    /// `retire_queue_size`: number of slots in the retire queue (e.g. 128).
+    /// `issue_stages`: stage name indices that represent "in the issue queue".
+    /// `retire_stages`: stage name indices that represent "in the retire queue".
+    pub fn queue_occupancy_at(
+        &self,
+        cycle: u32,
+        retire_queue_size: usize,
+        dispatch_stages: &[StageNameIdx],
+        issue_stages: &[StageNameIdx],
+        retire_stages: &[StageNameIdx],
+    ) -> QueueOccupancy {
+        let mut retire_queue = vec![None; retire_queue_size];
+        let mut dq_map: HashMap<u32, Vec<QueueSlotEntry>> = HashMap::new();
+        let mut iq_map: HashMap<u32, Vec<QueueSlotEntry>> = HashMap::new();
+
+        for (row, instr) in self.instructions.iter().enumerate() {
+            if instr.first_cycle > cycle || instr.last_cycle < cycle {
+                continue;
+            }
+
+            // Find which stage this instruction is in at `cycle`.
+            let stages =
+                &self.stages[instr.stage_range.start as usize..instr.stage_range.end as usize];
+            let mut current_stage = None;
+            for span in stages {
+                if span.start_cycle <= cycle && cycle < span.end_cycle {
+                    current_stage = Some(span.stage_name_idx);
+                    break;
+                }
+            }
+
+            let stage = match current_stage {
+                Some(s) => s,
+                None => continue,
+            };
+
+            // Check if in retire queue (any stage from Al through Cp).
+            if retire_stages.contains(&stage) {
+                if let Some(rbid) = instr.rbid {
+                    let slot = rbid as usize % retire_queue.len().max(1);
+                    retire_queue[slot] = Some(QueueSlotEntry { row, stage });
+                }
+            }
+
+            // Check if in dispatch queue (Ds stage).
+            if dispatch_stages.contains(&stage) {
+                let dq_id = instr.dq_id.unwrap_or(u32::MAX);
+                dq_map
+                    .entry(dq_id)
+                    .or_default()
+                    .push(QueueSlotEntry { row, stage });
+            }
+
+            // Check if in issue queue (Is stage).
+            if issue_stages.contains(&stage) {
+                let iq_id = instr.iq_id.unwrap_or(u32::MAX);
+                iq_map
+                    .entry(iq_id)
+                    .or_default()
+                    .push(QueueSlotEntry { row, stage });
+            }
+        }
+
+        let mut dispatch_queues: Vec<_> = dq_map.into_iter().collect();
+        dispatch_queues.sort_by_key(|(id, _)| *id);
+
+        let mut issue_queues: Vec<_> = iq_map.into_iter().collect();
+        issue_queues.sort_by_key(|(id, _)| *id);
+
+        QueueOccupancy {
+            retire_queue,
+            dispatch_queues,
+            issue_queues,
+        }
+    }
+
     /// Rebuild the id→row mapping (e.g. after deserialization).
     #[allow(dead_code)]
     pub fn rebuild_id_map(&mut self) {
@@ -188,6 +297,9 @@ mod tests {
             id: 42,
             sim_id: 100,
             thread_id: 0,
+            rbid: None,
+            iq_id: None,
+            dq_id: None,
             disasm: "add x1, x2, x3".to_string(),
             tooltip: String::new(),
             stage_range: 0..0,
@@ -199,6 +311,9 @@ mod tests {
             id: 43,
             sim_id: 101,
             thread_id: 0,
+            rbid: None,
+            iq_id: None,
+            dq_id: None,
             disasm: "sub x4, x5, x6".to_string(),
             tooltip: String::new(),
             stage_range: 0..0,
@@ -236,6 +351,9 @@ mod tests {
             id: 0,
             sim_id: 0,
             thread_id: 0,
+            rbid: None,
+            iq_id: None,
+            dq_id: None,
             disasm: "nop".to_string(),
             tooltip: String::new(),
             stage_range: 0..2,

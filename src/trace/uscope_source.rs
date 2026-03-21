@@ -2,6 +2,7 @@ use crate::trace::model::{
     DepKind, Dependency, InstructionData, PipelineTrace, RetireStatus, StageSpan,
 };
 use crate::trace::{TraceError, TraceSource};
+use instruction_decoder::Decoder;
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
@@ -41,6 +42,10 @@ struct CpuProtocolIds {
     entities_storage_id: u16,
     field_entity_id: u16,
     field_pc: u16,
+    field_inst_bits: Option<u16>,
+    field_rbid: Option<u16>,
+    field_iq_id: Option<u16>,
+    field_dq_id: Option<u16>,
     stage_transition_event_id: u16,
     annotate_event_id: u16,
     dependency_event_id: u16,
@@ -76,6 +81,10 @@ fn resolve_cpu_protocol(reader: &Reader) -> Result<CpuProtocolIds, TraceError> {
     // Find field indices by name
     let field_entity_id = find_field_index(schema, entities_storage, "entity_id")?;
     let field_pc = find_field_index(schema, entities_storage, "pc")?;
+    let field_inst_bits = find_field_index(schema, entities_storage, "inst_bits").ok();
+    let field_rbid = find_field_index(schema, entities_storage, "rbid").ok();
+    let field_iq_id = find_field_index(schema, entities_storage, "iq_id").ok();
+    let field_dq_id = find_field_index(schema, entities_storage, "dq_id").ok();
 
     // Find events by name in the CPU scope
     let find_event = |name: &str| -> Result<u16, TraceError> {
@@ -100,6 +109,10 @@ fn resolve_cpu_protocol(reader: &Reader) -> Result<CpuProtocolIds, TraceError> {
         entities_storage_id: entities_storage.storage_id,
         field_entity_id,
         field_pc,
+        field_inst_bits,
+        field_rbid,
+        field_iq_id,
+        field_dq_id,
         stage_transition_event_id,
         annotate_event_id,
         dependency_event_id,
@@ -161,6 +174,11 @@ struct InstrBuilder {
     entity_id: u32,
     reflex_id: u32,
     pc: u64,
+    inst_bits: Option<u32>,
+    rbid: Option<u32>,
+    iq_id: Option<u32>,
+    dq_id: Option<u32>,
+    has_disasm_annotation: bool,
     disasm: String,
     tooltip: String,
     stages: Vec<StageSpan>,
@@ -176,6 +194,11 @@ impl InstrBuilder {
             entity_id,
             reflex_id,
             pc,
+            inst_bits: None,
+            rbid: None,
+            iq_id: None,
+            dq_id: None,
+            has_disasm_annotation: false,
             disasm: format!("0x{:08x}", pc),
             tooltip: String::new(),
             stages: Vec::new(),
@@ -205,6 +228,31 @@ impl InstrBuilder {
         self.close_current_stage(cycle);
         self.current_stage = Some((stage_name_idx, cycle));
     }
+}
+
+/// Build an RV64GC instruction decoder from bundled ISA TOML definitions.
+fn build_rv64gc_decoder() -> Option<Decoder> {
+    Decoder::new(&[
+        include_str!("../../isa/RV64I.toml").to_string(),
+        include_str!("../../isa/RV64M.toml").to_string(),
+        include_str!("../../isa/RV64A.toml").to_string(),
+        include_str!("../../isa/RV32F.toml").to_string(),
+        include_str!("../../isa/RV64D.toml").to_string(),
+        include_str!("../../isa/RV64C.toml").to_string(),
+        include_str!("../../isa/RV64C-lower.toml").to_string(),
+        include_str!("../../isa/RV32_Zicsr.toml").to_string(),
+        include_str!("../../isa/RV_Zifencei.toml").to_string(),
+    ])
+    .ok()
+}
+
+/// Decode a single instruction using the decoder. Returns mnemonic or hex fallback.
+fn decode_instruction(decoder: &Decoder, inst_bits: u32) -> String {
+    // Compressed instructions have the two LSBs != 0b11
+    let bit_width = if inst_bits & 0x3 != 0x3 { 16 } else { 32 };
+    decoder
+        .decode_from_u32(inst_bits, bit_width)
+        .unwrap_or_else(|_| format!("0x{:08x}", inst_bits))
 }
 
 /// Detect whether an annotation looks like a disassembly line by checking if
@@ -323,6 +371,7 @@ fn parse_uscope(path: &Path) -> Result<PipelineTrace, TraceError> {
     let ids = resolve_cpu_protocol(&reader)?;
 
     let mut trace = PipelineTrace::new();
+    let decoder = build_rv64gc_decoder();
 
     // Populate trace metadata from the uscope file.
     populate_metadata(&reader, path, &ids, &mut trace);
@@ -372,6 +421,34 @@ fn parse_uscope(path: &Path) -> Result<PipelineTrace, TraceError> {
                                     if let Some(b) = builders.get_mut(&eid) {
                                         b.pc = op.value;
                                         b.disasm = format!("0x{:08x}", op.value);
+                                    }
+                                }
+                            } else if Some(op.field_index) == ids.field_inst_bits {
+                                // Store raw instruction bits for decoding
+                                if let Some(&eid) = slot_to_entity.get(&op.slot) {
+                                    if let Some(b) = builders.get_mut(&eid) {
+                                        b.inst_bits = Some(op.value as u32);
+                                    }
+                                }
+                            } else if Some(op.field_index) == ids.field_rbid {
+                                // Store retire buffer ID
+                                if let Some(&eid) = slot_to_entity.get(&op.slot) {
+                                    if let Some(b) = builders.get_mut(&eid) {
+                                        b.rbid = Some(op.value as u32);
+                                    }
+                                }
+                            } else if Some(op.field_index) == ids.field_iq_id {
+                                // Store issue queue ID
+                                if let Some(&eid) = slot_to_entity.get(&op.slot) {
+                                    if let Some(b) = builders.get_mut(&eid) {
+                                        b.iq_id = Some(op.value as u32);
+                                    }
+                                }
+                            } else if Some(op.field_index) == ids.field_dq_id {
+                                // Store dispatch queue ID
+                                if let Some(&eid) = slot_to_entity.get(&op.slot) {
+                                    if let Some(b) = builders.get_mut(&eid) {
+                                        b.dq_id = Some(op.value as u32);
                                     }
                                 }
                             }
@@ -429,6 +506,7 @@ fn parse_uscope(path: &Path) -> Result<PipelineTrace, TraceError> {
                                         // with a hex address matching the entity PC.
                                         if is_disasm_line(text, b.pc) {
                                             b.disasm = text.to_string();
+                                            b.has_disasm_annotation = true;
                                         } else {
                                             if !b.tooltip.is_empty() {
                                                 b.tooltip.push('\n');
@@ -478,7 +556,19 @@ fn parse_uscope(path: &Path) -> Result<PipelineTrace, TraceError> {
     });
 
     // Emit to PipelineTrace
-    for b in finalized {
+    for mut b in finalized {
+        // Decode instruction bits into mnemonic if no annotation already provided disasm
+        if !b.has_disasm_annotation {
+            if let (Some(bits), Some(dec)) = (b.inst_bits, &decoder) {
+                let mnemonic = decode_instruction(dec, bits);
+                if b.pc != 0 {
+                    b.disasm = format!("0x{:08x} {}", b.pc, mnemonic);
+                } else {
+                    b.disasm = mnemonic;
+                }
+            }
+        }
+
         let stage_start = trace.stages.len() as u32;
         trace.stages.extend(b.stages);
         let stage_end = trace.stages.len() as u32;
@@ -487,6 +577,9 @@ fn parse_uscope(path: &Path) -> Result<PipelineTrace, TraceError> {
             id: b.entity_id,
             sim_id: b.entity_id as u64,
             thread_id: 0,
+            rbid: b.rbid,
+            iq_id: b.iq_id,
+            dq_id: b.dq_id,
             disasm: b.disasm,
             tooltip: b.tooltip,
             stage_range: stage_start..stage_end,

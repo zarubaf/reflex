@@ -135,7 +135,7 @@ impl Render for TimelinePane {
                             if row < ts.trace.row_count() {
                                 ts.selected_row = Some(row);
                             }
-                            let cycle = ts.viewport.pixel_to_cycle(local_x);
+                            let cycle = ts.viewport.pixel_to_cycle(local_x).round();
                             if !ts.cursor_state.cursors.is_empty() {
                                 ts.cursor_state.cursors[ts.cursor_state.active_idx].cycle = cycle;
                             }
@@ -163,7 +163,7 @@ impl Render for TimelinePane {
                 if let Some(idx) = cursor_drag_idx {
                     let local_x = px_val(event.position.x) - px_val(canvas_origin.x);
                     state_for_move.update(cx, |ts, cx| {
-                        let cycle = ts.viewport.pixel_to_cycle(local_x);
+                        let cycle = ts.viewport.pixel_to_cycle(local_x).round();
                         if idx < ts.cursor_state.cursors.len() {
                             ts.cursor_state.cursors[idx].cycle = cycle;
                         }
