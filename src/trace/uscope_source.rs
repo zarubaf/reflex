@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
 use uscope::reader::Reader;
-use uscope::state::{TimedEvent, TimedOp};
+use uscope::state::TimedItem;
 use uscope::types::*;
 
 pub struct UscopeSource;
@@ -207,21 +207,6 @@ impl InstrBuilder {
     }
 }
 
-/// Merged item for chronological processing.
-enum MergedItem {
-    Op(TimedOp),
-    Event(TimedEvent),
-}
-
-impl MergedItem {
-    fn time_ps(&self) -> u64 {
-        match self {
-            MergedItem::Op(op) => op.time_ps,
-            MergedItem::Event(ev) => ev.time_ps,
-        }
-    }
-}
-
 /// Detect whether an annotation looks like a disassembly line by checking if
 /// it starts with a hex address that matches the entity's known PC.
 /// Handles formats like "00001000: jal zero, 0x10" and "0x80000000 addi x1, x0, 1".
@@ -239,6 +224,92 @@ fn is_disasm_line(text: &str, pc: u64) -> bool {
     false
 }
 
+fn populate_metadata(
+    reader: &Reader,
+    path: &Path,
+    ids: &CpuProtocolIds,
+    trace: &mut PipelineTrace,
+) {
+    let header = reader.header();
+    let schema = reader.schema();
+
+    // File info
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string());
+    trace.metadata.push(("File".into(), file_name));
+    trace.metadata.push((
+        "Format".into(),
+        format!("µScope v{}.{}", header.version_major, header.version_minor),
+    ));
+
+    // Flags
+    let mut flags = Vec::new();
+    if header.flags & F_COMPRESSED != 0 { flags.push("compressed"); }
+    if header.flags & F_INTERLEAVED_DELTAS != 0 { flags.push("interleaved"); }
+    if header.flags & F_COMPACT_DELTAS != 0 && header.flags & F_INTERLEAVED_DELTAS == 0 {
+        flags.push("compact-deltas");
+    }
+    if !flags.is_empty() {
+        trace.metadata.push(("Flags".into(), flags.join(", ")));
+    }
+
+    // DUT properties (all of them)
+    for (key, value) in reader.dut_properties() {
+        trace.metadata.push((key.to_string(), value.to_string()));
+    }
+
+    // Clock
+    if !schema.clock_domains.is_empty() {
+        let cd = &schema.clock_domains[0];
+        let freq_mhz = 1_000_000.0 / cd.period_ps as f64;
+        let name = schema.get_string(cd.name).unwrap_or("?");
+        trace.metadata.push((
+            "Clock".into(),
+            format!("{} ({} ps, {:.0} MHz)", name, cd.period_ps, freq_mhz),
+        ));
+    }
+
+    // Pipeline stages
+    trace.metadata.push((
+        "Pipeline".into(),
+        ids.stage_names.join(" → "),
+    ));
+
+    // Trace stats
+    let total_us = header.total_time_ps as f64 / 1e6;
+    let total_cycles = header.total_time_ps / ids.period_ps;
+    trace.metadata.push((
+        "Duration".into(),
+        format!("{} cycles ({:.1} µs)", total_cycles, total_us),
+    ));
+    trace.metadata.push((
+        "Segments".into(),
+        format!("{}", header.num_segments),
+    ));
+
+    // Schema summary
+    trace.metadata.push((
+        "Schema".into(),
+        format!(
+            "{} storages, {} events, {} enums",
+            schema.storages.len(),
+            schema.events.len(),
+            schema.enums.len(),
+        ),
+    ));
+
+    // String table
+    if let Some(st) = reader.string_table() {
+        let mut count = 0u32;
+        while st.get(count).is_some() {
+            count += 1;
+        }
+        trace.metadata.push(("Strings".into(), format!("{} entries", count)));
+    }
+}
+
 fn parse_uscope(path: &Path) -> Result<PipelineTrace, TraceError> {
     let path_str = path
         .to_str()
@@ -248,6 +319,9 @@ fn parse_uscope(path: &Path) -> Result<PipelineTrace, TraceError> {
     let ids = resolve_cpu_protocol(&reader)?;
 
     let mut trace = PipelineTrace::new();
+
+    // Populate trace metadata from the uscope file.
+    populate_metadata(&reader, path, &ids, &mut trace);
 
     // Pre-intern stage names
     let stage_name_indices: Vec<u16> = ids
@@ -265,28 +339,11 @@ fn parse_uscope(path: &Path) -> Result<PipelineTrace, TraceError> {
     let num_segments = reader.segment_count();
 
     for seg_idx in 0..num_segments {
-        let (_storages, events, ops) = reader.segment_replay(seg_idx).map_err(TraceError::Io)?;
-
-        // Merge ops and events by time, ops first at same timestamp
-        let mut items: Vec<MergedItem> = Vec::with_capacity(ops.len() + events.len());
-        for op in ops {
-            items.push(MergedItem::Op(op));
-        }
-        for ev in events {
-            items.push(MergedItem::Event(ev));
-        }
-        items.sort_by_key(|item| {
-            let t = item.time_ps();
-            let order = match item {
-                MergedItem::Op(_) => 0u8,
-                MergedItem::Event(_) => 1u8,
-            };
-            (t, order)
-        });
+        let (_storages, items) = reader.segment_replay(seg_idx).map_err(TraceError::Io)?;
 
         for item in items {
             match item {
-                MergedItem::Op(op) => {
+                TimedItem::Op(op) => {
                     if op.storage_id != ids.entities_storage_id {
                         continue;
                     }
@@ -330,7 +387,7 @@ fn parse_uscope(path: &Path) -> Result<PipelineTrace, TraceError> {
                         _ => {}
                     }
                 }
-                MergedItem::Event(ev) => {
+                TimedItem::Event(ev) => {
                     let cycle = (ev.time_ps / ids.period_ps) as u32;
 
                     if ev.event_type_id == ids.stage_transition_event_id {

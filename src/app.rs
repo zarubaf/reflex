@@ -16,6 +16,7 @@ use crate::trace::model::PipelineTrace;
 use crate::trace::TraceRegistry;
 use crate::views::goto_bar::GotoBar;
 use crate::views::help_overlay::HelpOverlay;
+use crate::views::info_overlay::InfoOverlay;
 use crate::views::pipeline_panel::PipelinePanel;
 use crate::views::search_bar::SearchBar;
 use crate::views::status_bar::StatusBar;
@@ -232,6 +233,7 @@ pub struct AppView {
     search_bar: Entity<SearchBar>,
     goto_bar: Entity<GotoBar>,
     help_overlay: Entity<HelpOverlay>,
+    info_overlay: Entity<InfoOverlay>,
     focus_handle: FocusHandle,
     pending_open_urls: Arc<Mutex<Vec<String>>>,
 }
@@ -245,6 +247,7 @@ impl AppView {
     ) -> Self {
         let focus_handle = cx.focus_handle();
         let help_overlay = cx.new(|cx| HelpOverlay::new(focus_handle.clone(), cx));
+        let info_overlay = cx.new(|cx| InfoOverlay::new(focus_handle.clone(), cx));
 
         // Placeholder state for initial empty panel construction.
         let placeholder = cx.new(|_cx| TraceState::new());
@@ -259,6 +262,7 @@ impl AppView {
             search_bar: cx.new(|cx| SearchBar::new(placeholder.clone(), focus_handle.clone(), cx)),
             goto_bar: cx.new(|cx| GotoBar::new(placeholder.clone(), focus_handle.clone(), cx)),
             help_overlay,
+            info_overlay,
             focus_handle,
             pending_open_urls,
         };
@@ -506,6 +510,17 @@ impl AppView {
 
     fn handle_toggle_help(&mut self, _: &ToggleHelp, window: &mut Window, cx: &mut Context<Self>) {
         self.help_overlay.update(cx, |h, cx| h.toggle(window, cx));
+    }
+
+    fn handle_toggle_info(&mut self, _: &ToggleInfo, window: &mut Window, cx: &mut Context<Self>) {
+        // Update metadata from the active tab before showing.
+        if let Some(state) = self.active_state().cloned() {
+            let metadata = state.read(cx).trace.metadata.clone();
+            self.info_overlay.update(cx, |info, cx| {
+                info.set_metadata(metadata, cx);
+            });
+        }
+        self.info_overlay.update(cx, |h, cx| h.toggle(window, cx));
     }
 
     fn handle_generate_trace(
@@ -784,6 +799,7 @@ impl Render for AppView {
             .on_action(cx.listener(Self::handle_toggle_search))
             .on_action(cx.listener(Self::handle_goto_cycle))
             .on_action(cx.listener(Self::handle_toggle_help))
+            .on_action(cx.listener(Self::handle_toggle_info))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.key_char.as_deref() == Some("?") {
                     this.help_overlay.update(cx, |h, cx| h.toggle(window, cx));
@@ -858,6 +874,8 @@ impl Render for AppView {
             })
             // Help overlay.
             .child(self.help_overlay.clone())
+            // Info overlay.
+            .child(self.info_overlay.clone())
             // Annotation tooltip (topmost layer).
             .when_some(
                 active_state.and_then(|s| s.read(cx).tooltip_hover.clone()),

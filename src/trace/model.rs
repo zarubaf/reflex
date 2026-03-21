@@ -62,6 +62,8 @@ pub struct PipelineTrace {
     pub instructions: Vec<InstructionData>,
     pub stages: Vec<StageSpan>,
     pub dependencies: Vec<Dependency>,
+    /// Key-value metadata from the trace source (DUT properties, format info, etc.).
+    pub metadata: Vec<(String, String)>,
     stage_names: Vec<String>,
     stage_name_map: HashMap<String, StageNameIdx>,
     id_to_row: HashMap<u32, usize>,
@@ -73,6 +75,7 @@ impl PipelineTrace {
             instructions: Vec::new(),
             stages: Vec::new(),
             dependencies: Vec::new(),
+            metadata: Vec::new(),
             stage_names: Vec::new(),
             stage_name_map: HashMap::new(),
             id_to_row: HashMap::new(),

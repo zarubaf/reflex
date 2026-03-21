@@ -12,6 +12,7 @@ actions!([
     SelectPrevious,
     ToggleSearch,
     ToggleHelp,
+    ToggleInfo,
     GenerateTrace,
     OpenFile,
     ReloadTrace,

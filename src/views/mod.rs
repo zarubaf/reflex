@@ -1,5 +1,6 @@
 pub mod goto_bar;
 pub mod help_overlay;
+pub mod info_overlay;
 pub mod label_pane;
 pub mod pipeline_panel;
 pub mod search_bar;
