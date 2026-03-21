@@ -234,6 +234,7 @@ pub struct AppView {
     retire_queue_tab: Entity<QueuePanel>,
     dispatch_queue_tab: Entity<QueuePanel>,
     issue_queue_tab: Entity<QueuePanel>,
+    queue_placement: DockPlacement,
     dock_area: Entity<DockArea>,
     status_bar: Entity<StatusBar>,
     search_bar: Entity<SearchBar>,
@@ -265,11 +266,13 @@ impl AppView {
             cx.new(|cx| QueuePanel::new(placeholder.clone(), QueueKind::Dispatch, cx));
         let issue_queue_tab =
             cx.new(|cx| QueuePanel::new(placeholder.clone(), QueueKind::Issue, cx));
+        let queue_placement = DockPlacement::Bottom;
         let dock_area = Self::build_dock_area(
             &pipeline_panel,
             &retire_queue_tab,
             &dispatch_queue_tab,
             &issue_queue_tab,
+            queue_placement,
             false,
             window,
             cx,
@@ -284,6 +287,7 @@ impl AppView {
             retire_queue_tab,
             dispatch_queue_tab,
             issue_queue_tab,
+            queue_placement,
             dock_area,
             status_bar: cx.new(|_cx| StatusBar::new(placeholder.clone())),
             search_bar: cx.new(|cx| SearchBar::new(placeholder.clone(), focus_handle.clone(), cx)),
@@ -338,12 +342,13 @@ impl AppView {
         self.rebuild_panel(window, cx);
     }
 
-    /// Build a DockArea with the pipeline panel in the center and queue tabs as a bottom dock.
+    /// Build a DockArea with the pipeline panel in the center and queue tabs at the given placement.
     fn build_dock_area(
         pipeline_panel: &Entity<PipelinePanel>,
         retire_tab: &Entity<QueuePanel>,
         dispatch_tab: &Entity<QueuePanel>,
         issue_tab: &Entity<QueuePanel>,
+        placement: DockPlacement,
         queue_visible: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -357,17 +362,68 @@ impl AppView {
             let weak = cx.entity().downgrade();
             let center = DockItem::tab(pp, &weak, window, cx);
             dock_area.set_center(center, window, cx);
-            let bottom = DockItem::h_split(
-                vec![
-                    DockItem::tab(rq, &weak, window, cx),
-                    DockItem::tab(dq, &weak, window, cx),
-                    DockItem::tab(iq, &weak, window, cx),
-                ],
-                &weak,
-                window,
-                cx,
-            );
-            dock_area.set_bottom_dock(bottom, Some(px(250.0)), queue_visible, window, cx);
+
+            // For left/right docks, stack queue tabs vertically; for bottom, horizontally.
+            let queue_items = vec![
+                DockItem::tab(rq, &weak, window, cx),
+                DockItem::tab(dq, &weak, window, cx),
+                DockItem::tab(iq, &weak, window, cx),
+            ];
+            let queue_split = match placement {
+                DockPlacement::Bottom => DockItem::h_split(queue_items, &weak, window, cx),
+                _ => DockItem::v_split(queue_items, &weak, window, cx),
+            };
+
+            match placement {
+                DockPlacement::Left => {
+                    dock_area.set_left_dock(
+                        queue_split,
+                        Some(px(300.0)),
+                        queue_visible,
+                        window,
+                        cx,
+                    );
+                    // Left/right docks have no collapsed header, so prevent collapsing.
+                    dock_area.set_dock_collapsible(
+                        Edges {
+                            left: false,
+                            right: true,
+                            top: true,
+                            bottom: true,
+                        },
+                        window,
+                        cx,
+                    );
+                }
+                DockPlacement::Right => {
+                    dock_area.set_right_dock(
+                        queue_split,
+                        Some(px(300.0)),
+                        queue_visible,
+                        window,
+                        cx,
+                    );
+                    dock_area.set_dock_collapsible(
+                        Edges {
+                            left: true,
+                            right: false,
+                            top: true,
+                            bottom: true,
+                        },
+                        window,
+                        cx,
+                    );
+                }
+                DockPlacement::Bottom | DockPlacement::Center => {
+                    dock_area.set_bottom_dock(
+                        queue_split,
+                        Some(px(250.0)),
+                        queue_visible,
+                        window,
+                        cx,
+                    );
+                }
+            }
             dock_area
         })
     }
@@ -380,7 +436,7 @@ impl AppView {
             let queue_visible = self
                 .dock_area
                 .read(cx)
-                .is_dock_open(DockPlacement::Bottom, cx);
+                .is_dock_open(self.queue_placement, cx);
             self.retire_queue_tab =
                 cx.new(|cx| QueuePanel::new(state.clone(), QueueKind::Retire, cx));
             self.dispatch_queue_tab =
@@ -392,6 +448,7 @@ impl AppView {
                 &self.retire_queue_tab,
                 &self.dispatch_queue_tab,
                 &self.issue_queue_tab,
+                self.queue_placement,
                 queue_visible,
                 window,
                 cx,
@@ -749,9 +806,70 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.dock_area.update(cx, |da, cx| {
-            da.toggle_dock(DockPlacement::Bottom, window, cx)
-        });
+        // Only toggle for bottom dock (left/right have no collapsed header).
+        if self.queue_placement == DockPlacement::Bottom {
+            self.dock_area
+                .update(cx, |da, cx| da.toggle_dock(DockPlacement::Bottom, window, cx));
+        }
+    }
+
+    fn switch_queue_layout(
+        &mut self,
+        placement: DockPlacement,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.queue_placement == placement {
+            return;
+        }
+        self.queue_placement = placement;
+        if let Some(state) = self.active_state().cloned() {
+            self.pipeline_panel = cx.new(|cx| PipelinePanel::new(state.clone(), window, cx));
+            self.retire_queue_tab =
+                cx.new(|cx| QueuePanel::new(state.clone(), QueueKind::Retire, cx));
+            self.dispatch_queue_tab =
+                cx.new(|cx| QueuePanel::new(state.clone(), QueueKind::Dispatch, cx));
+            self.issue_queue_tab =
+                cx.new(|cx| QueuePanel::new(state.clone(), QueueKind::Issue, cx));
+            self.dock_area = Self::build_dock_area(
+                &self.pipeline_panel,
+                &self.retire_queue_tab,
+                &self.dispatch_queue_tab,
+                &self.issue_queue_tab,
+                self.queue_placement,
+                true, // always open when actively switching layout
+                window,
+                cx,
+            );
+            self.status_bar = cx.new(|_cx| StatusBar::new(state.clone()));
+            let focus = self.focus_handle.clone();
+            self.search_bar = cx.new(|cx| SearchBar::new(state.clone(), focus.clone(), cx));
+            self.goto_bar = cx.new(|cx| GotoBar::new(state.clone(), focus, cx));
+        }
+        self.focus_handle.focus(window);
+        cx.notify();
+    }
+
+    fn handle_layout_bottom(
+        &mut self,
+        _: &LayoutBottom,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.switch_queue_layout(DockPlacement::Bottom, window, cx);
+    }
+
+    fn handle_layout_left(&mut self, _: &LayoutLeft, window: &mut Window, cx: &mut Context<Self>) {
+        self.switch_queue_layout(DockPlacement::Left, window, cx);
+    }
+
+    fn handle_layout_right(
+        &mut self,
+        _: &LayoutRight,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.switch_queue_layout(DockPlacement::Right, window, cx);
     }
 }
 
@@ -891,6 +1009,9 @@ impl Render for AppView {
             .on_action(cx.listener(Self::handle_next_cursor))
             .on_action(cx.listener(Self::handle_prev_cursor))
             .on_action(cx.listener(Self::handle_toggle_queues))
+            .on_action(cx.listener(Self::handle_layout_bottom))
+            .on_action(cx.listener(Self::handle_layout_left))
+            .on_action(cx.listener(Self::handle_layout_right))
             // File drag & drop onto window — opens in new tab.
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
                 if let Some(path) = paths.paths().first() {

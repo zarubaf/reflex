@@ -210,35 +210,38 @@ impl PipelineTrace {
                 None => continue,
             };
 
-            let is_ready = instr
-                .ready_cycle
-                .map(|rc| rc <= cycle)
-                .unwrap_or(false);
+            let is_ready = instr.ready_cycle.map(|rc| rc <= cycle).unwrap_or(false);
 
             // Check if in retire queue (any stage from Al through Cp).
             if retire_stages.contains(&stage) {
                 if let Some(rbid) = instr.rbid {
                     let slot = rbid as usize % retire_queue.len().max(1);
-                    retire_queue[slot] = Some(QueueSlotEntry { row, stage, is_ready });
+                    retire_queue[slot] = Some(QueueSlotEntry {
+                        row,
+                        stage,
+                        is_ready,
+                    });
                 }
             }
 
             // Check if in dispatch queue (Ds stage).
             if dispatch_stages.contains(&stage) {
                 let dq_id = instr.dq_id.unwrap_or(u32::MAX);
-                dq_map
-                    .entry(dq_id)
-                    .or_default()
-                    .push(QueueSlotEntry { row, stage, is_ready });
+                dq_map.entry(dq_id).or_default().push(QueueSlotEntry {
+                    row,
+                    stage,
+                    is_ready,
+                });
             }
 
             // Check if in issue queue (Is stage).
             if issue_stages.contains(&stage) {
                 let iq_id = instr.iq_id.unwrap_or(u32::MAX);
-                iq_map
-                    .entry(iq_id)
-                    .or_default()
-                    .push(QueueSlotEntry { row, stage, is_ready });
+                iq_map.entry(iq_id).or_default().push(QueueSlotEntry {
+                    row,
+                    stage,
+                    is_ready,
+                });
             }
         }
 

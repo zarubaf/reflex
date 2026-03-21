@@ -29,5 +29,8 @@ pub fn register(cx: &mut App) {
         KeyBinding::new("cmd-q", Quit, None),
         KeyBinding::new("cmd-i", ToggleInfo, None),
         KeyBinding::new("cmd-b", ToggleQueues, None),
+        KeyBinding::new("alt-cmd-1", LayoutBottom, None),
+        KeyBinding::new("alt-cmd-2", LayoutLeft, None),
+        KeyBinding::new("alt-cmd-3", LayoutRight, None),
     ]);
 }

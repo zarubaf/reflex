@@ -25,5 +25,8 @@ actions!([
     PrevCursor,
     GotoCycle,
     ToggleQueues,
+    LayoutBottom,
+    LayoutLeft,
+    LayoutRight,
     Quit,
 ]);

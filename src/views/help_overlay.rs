@@ -30,6 +30,12 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("[ / ]", "Prev / next cursor"),
     ("Drag head", "Reposition cursor"),
     ("", ""),
+    ("Layout", ""),
+    ("Cmd + B", "Toggle queues"),
+    ("Alt + Cmd + 1", "Queues bottom"),
+    ("Alt + Cmd + 2", "Queues left"),
+    ("Alt + Cmd + 3", "Queues right"),
+    ("", ""),
     ("Cmd + I", "Trace info"),
     ("?", "Toggle this help"),
 ];
