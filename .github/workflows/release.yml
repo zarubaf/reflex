@@ -26,15 +26,61 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build --release --target aarch64-apple-darwin
+      - name: Bundle .app
+        run: |
+          APP="Reflex.app"
+          mkdir -p "${APP}/Contents/MacOS" "${APP}/Contents/Resources"
+          cp target/aarch64-apple-darwin/release/reflex "${APP}/Contents/MacOS/reflex"
+          cp resources/Info.plist "${APP}/Contents/Info.plist"
+          cp resources/reflex.icns "${APP}/Contents/Resources/reflex.icns"
+      - name: Import signing certificate
+        uses: apple-actions/import-codesign-certs@v5
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERT_DATA }}
+          p12-password: ${{ secrets.APPLE_CERT_PASSWORD }}
+      - name: Sign and notarize
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
+        run: |
+          # Sign the binary with hardened runtime
+          codesign \
+            --timestamp \
+            --options=runtime \
+            --force --verify --verbose \
+            --sign "Developer ID Application: Florian Zaruba (${APPLE_TEAM_ID})" \
+            Reflex.app/Contents/MacOS/reflex
+
+          # Sign the .app bundle
+          codesign \
+            --timestamp \
+            --options=runtime \
+            --force --verify --verbose \
+            --sign "Developer ID Application: Florian Zaruba (${APPLE_TEAM_ID})" \
+            Reflex.app
+
+          # Create zip for notarization
+          ditto -c -k --keepParent Reflex.app Reflex-notarize.zip
+
+          # Submit for notarization and wait
+          xcrun notarytool submit Reflex-notarize.zip \
+            --apple-id "${APPLE_ID}" \
+            --password "${APPLE_NOTARY_PASSWORD}" \
+            --team-id "${APPLE_TEAM_ID}" \
+            --wait | tee notary.log
+          grep -q Accepted notary.log
+
+          # Staple the notarization ticket to the app
+          xcrun stapler staple Reflex.app
       - name: Package
         run: |
           mkdir -p dist
-          cp target/aarch64-apple-darwin/release/reflex dist/reflex
-          cd dist && tar czf reflex-macos-aarch64.tar.gz reflex
+          tar czf dist/Reflex-macos-aarch64.tar.gz Reflex.app
       - uses: actions/upload-artifact@v4
         with:
-          name: reflex-macos-aarch64
-          path: dist/reflex-macos-aarch64.tar.gz
+          name: Reflex-macos-aarch64
+          path: dist/Reflex-macos-aarch64.tar.gz
 
   build-linux:
     runs-on: ubuntu-latest
@@ -92,5 +138,5 @@ jobs:
         with:
           generate_release_notes: true
           files: |
-            artifacts/reflex-macos-aarch64/reflex-macos-aarch64.tar.gz
+            artifacts/Reflex-macos-aarch64/Reflex-macos-aarch64.tar.gz
             artifacts/reflex-linux-x86_64/reflex-linux-x86_64.tar.gz

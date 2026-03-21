@@ -8,6 +8,7 @@ mod views;
 use app::AppView;
 use gpui::*;
 use gpui_component::TitleBar;
+use std::sync::{Arc, Mutex};
 
 /// Force the macOS window appearance to dark so native traffic lights
 /// render with proper contrast on our dark background.
@@ -42,8 +43,18 @@ fn set_app_icon() {
 fn main() {
     let file_path = std::env::args().nth(1);
 
+    // Shared queue for file URLs received via dock icon drop or Finder "Open With".
+    let pending_open_urls: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+
     let application = Application::new().with_assets(gpui_component_assets::Assets);
 
+    let pending_for_callback = pending_open_urls.clone();
+    application.on_open_urls(move |urls| {
+        let mut pending = pending_for_callback.lock().unwrap();
+        pending.extend(urls);
+    });
+
+    let pending_for_app = pending_open_urls;
     application.run(move |cx| {
         gpui_component::init(cx);
         interaction::keybindings::register(cx);
@@ -86,7 +97,7 @@ fn main() {
         };
 
         cx.open_window(window_options, |window, cx| {
-            cx.new(|cx| AppView::new(file_path.clone(), window, cx))
+            cx.new(|cx| AppView::new(file_path.clone(), pending_for_app.clone(), window, cx))
         })
         .expect("Failed to open window");
 

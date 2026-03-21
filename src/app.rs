@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use gpui::prelude::FluentBuilder as _;
@@ -18,6 +19,27 @@ use crate::views::help_overlay::HelpOverlay;
 use crate::views::pipeline_panel::PipelinePanel;
 use crate::views::search_bar::SearchBar;
 use crate::views::status_bar::StatusBar;
+
+/// Decode percent-encoded characters in a URL path (e.g. `%20` → ` `).
+fn percent_decode(input: &str) -> String {
+    let mut result = Vec::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(byte) =
+                u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16)
+            {
+                result.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        result.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&result).into_owned()
+}
 
 /// Info for a tooltip currently being shown on hover.
 #[derive(Clone)]
@@ -211,10 +233,16 @@ pub struct AppView {
     goto_bar: Entity<GotoBar>,
     help_overlay: Entity<HelpOverlay>,
     focus_handle: FocusHandle,
+    pending_open_urls: Arc<Mutex<Vec<String>>>,
 }
 
 impl AppView {
-    pub fn new(file_path: Option<String>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        file_path: Option<String>,
+        pending_open_urls: Arc<Mutex<Vec<String>>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus_handle = cx.focus_handle();
         let help_overlay = cx.new(|cx| HelpOverlay::new(focus_handle.clone(), cx));
 
@@ -232,6 +260,7 @@ impl AppView {
             goto_bar: cx.new(|cx| GotoBar::new(placeholder.clone(), focus_handle.clone(), cx)),
             help_overlay,
             focus_handle,
+            pending_open_urls,
         };
 
         if let Some(ref path) = file_path {
@@ -258,6 +287,27 @@ impl AppView {
         // Release builds with no file argument: start empty.
 
         app
+    }
+
+    /// Process any file URLs queued by the platform `on_open_urls` callback.
+    fn drain_pending_urls(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let urls: Vec<String> = {
+            let mut pending = self.pending_open_urls.lock().unwrap();
+            std::mem::take(&mut *pending)
+        };
+        for url in urls {
+            // macOS sends file:// URLs; strip the scheme to get the path.
+            let path_str = if let Some(stripped) = url.strip_prefix("file://") {
+                // URL-decode percent-encoded characters
+                percent_decode(stripped)
+            } else {
+                url
+            };
+            let path = std::path::Path::new(&path_str);
+            if path.exists() {
+                self.open_in_new_tab(path, window, cx);
+            }
+        }
     }
 
     /// Get the active tab's state entity, if any tab is open.
@@ -627,6 +677,11 @@ impl Render for AppView {
         if self.needs_rebuild {
             self.needs_rebuild = false;
             self.rebuild_panel(window, cx);
+        }
+
+        // Process files dropped on dock icon or opened via Finder.
+        if !self.pending_open_urls.lock().unwrap().is_empty() {
+            self.drain_pending_urls(window, cx);
         }
 
         let has_tabs = !self.tabs.is_empty();
