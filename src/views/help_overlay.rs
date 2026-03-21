@@ -18,6 +18,7 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("Cmd + F", "Search instructions"),
     ("Enter", "Next search result"),
     ("Escape", "Close search"),
+    ("Cmd + L", "Go to cycle"),
     ("Cmd + O", "Open trace file"),
     ("Cmd + R", "Reload trace"),
     ("Cmd + G", "Generate new trace"),

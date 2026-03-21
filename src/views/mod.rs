@@ -1,3 +1,4 @@
+pub mod goto_bar;
 pub mod help_overlay;
 pub mod label_pane;
 pub mod pipeline_panel;

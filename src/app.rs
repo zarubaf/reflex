@@ -15,6 +15,7 @@ use crate::trace::model::PipelineTrace;
 use crate::trace::TraceRegistry;
 use crate::views::help_overlay::HelpOverlay;
 use crate::views::pipeline_panel::PipelinePanel;
+use crate::views::goto_bar::GotoBar;
 use crate::views::search_bar::SearchBar;
 use crate::views::status_bar::StatusBar;
 
@@ -120,10 +121,7 @@ impl TraceState {
     pub fn load_trace(&mut self, trace: PipelineTrace) {
         self.viewport.max_cycle = trace.max_cycle();
         self.viewport.max_row = trace.row_count();
-        self.viewport.scroll_cycle = 0.0;
-        self.viewport.scroll_row = 0.0;
-        self.selected_row = None;
-        self.cursor_state = CursorState::new();
+        self.viewport.clamp();
         self.trace = trace;
     }
 
@@ -210,6 +208,7 @@ pub struct AppView {
     pipeline_panel: Entity<PipelinePanel>,
     status_bar: Entity<StatusBar>,
     search_bar: Entity<SearchBar>,
+    goto_bar: Entity<GotoBar>,
     help_overlay: Entity<HelpOverlay>,
     focus_handle: FocusHandle,
 }
@@ -230,6 +229,7 @@ impl AppView {
             pipeline_panel: cx.new(|cx| PipelinePanel::new(placeholder.clone(), window, cx)),
             status_bar: cx.new(|_cx| StatusBar::new(placeholder.clone())),
             search_bar: cx.new(|cx| SearchBar::new(placeholder.clone(), focus_handle.clone(), cx)),
+            goto_bar: cx.new(|cx| GotoBar::new(placeholder.clone(), focus_handle.clone(), cx)),
             help_overlay,
             focus_handle,
         };
@@ -274,13 +274,14 @@ impl AppView {
         self.rebuild_panel(window, cx);
     }
 
-    /// Rebuild pipeline panel, status bar, and search bar to point at the active tab's state.
+    /// Rebuild pipeline panel, status bar, search bar, and goto bar to point at the active tab's state.
     fn rebuild_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(state) = self.active_state().cloned() {
             self.pipeline_panel = cx.new(|cx| PipelinePanel::new(state.clone(), window, cx));
             self.status_bar = cx.new(|_cx| StatusBar::new(state.clone()));
             let focus = self.focus_handle.clone();
-            self.search_bar = cx.new(|cx| SearchBar::new(state.clone(), focus, cx));
+            self.search_bar = cx.new(|cx| SearchBar::new(state.clone(), focus.clone(), cx));
+            self.goto_bar = cx.new(|cx| GotoBar::new(state.clone(), focus, cx));
         }
         cx.notify();
     }
@@ -447,6 +448,15 @@ impl AppView {
         cx: &mut Context<Self>,
     ) {
         self.search_bar.update(cx, |sb, cx| sb.toggle(window, cx));
+    }
+
+    fn handle_goto_cycle(
+        &mut self,
+        _: &GotoCycle,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.goto_bar.update(cx, |gb, cx| gb.toggle(window, cx));
     }
 
     fn handle_toggle_help(&mut self, _: &ToggleHelp, window: &mut Window, cx: &mut Context<Self>) {
@@ -722,6 +732,7 @@ impl Render for AppView {
             .on_action(cx.listener(Self::handle_select_next))
             .on_action(cx.listener(Self::handle_select_previous))
             .on_action(cx.listener(Self::handle_toggle_search))
+            .on_action(cx.listener(Self::handle_goto_cycle))
             .on_action(cx.listener(Self::handle_toggle_help))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.key_char.as_deref() == Some("?") {
@@ -764,6 +775,7 @@ impl Render for AppView {
                     .font_family("SF Mono, Menlo, Monaco, monospace")
                     .child(self.pipeline_panel.clone())
                     .child(self.search_bar.clone())
+                    .child(self.goto_bar.clone())
             } else {
                 div()
                     .flex_1()

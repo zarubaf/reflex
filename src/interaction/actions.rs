@@ -22,4 +22,5 @@ actions!([
     RemoveCursor,
     NextCursor,
     PrevCursor,
+    GotoCycle,
 ]);

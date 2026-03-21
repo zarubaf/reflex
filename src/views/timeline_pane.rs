@@ -720,20 +720,24 @@ fn paint_cursor_heads(
             let line_y = HEADER_BASE + lane as f32 * DELTA_LANE_H + DELTA_LANE_H / 2.0;
             lane_idx += 1;
 
-            // Horizontal connecting line.
-            window.paint_quad(fill(
-                Bounds {
-                    origin: Point {
-                        x: bounds.origin.x + px(left_x),
-                        y: bounds.origin.y + px(line_y),
+            // Horizontal connecting line (clamped to visible area).
+            let draw_left = left_x.max(0.0);
+            let draw_right = right_x.min(canvas_w);
+            if draw_right > draw_left {
+                window.paint_quad(fill(
+                    Bounds {
+                        origin: Point {
+                            x: bounds.origin.x + px(draw_left),
+                            y: bounds.origin.y + px(line_y),
+                        },
+                        size: Size {
+                            width: px((draw_right - draw_left).max(1.0)),
+                            height: px(1.0),
+                        },
                     },
-                    size: Size {
-                        width: px((right_x - left_x).max(1.0)),
-                        height: px(1.0),
-                    },
-                },
-                line_color,
-            ));
+                    line_color,
+                ));
+            }
 
             // Small vertical end caps (2px tall).
             for &cap_x in &[left_x, right_x] {
@@ -779,7 +783,13 @@ fn paint_cursor_heads(
             let delta_tw = px_val(delta_shaped.width);
             let pill_w = delta_tw + 6.0;
             let pill_h = 10.0;
-            let mid_x = (left_x + right_x) / 2.0;
+            // Clamp mid_x to the visible viewport so the pill stays on-screen
+            // even when one cursor is off-viewport.
+            let vis_left = left_x.max(0.0);
+            let vis_right = right_x.min(canvas_w);
+            let mid_x = ((vis_left + vis_right) / 2.0)
+                .max(pill_w / 2.0 + 2.0)
+                .min(canvas_w - pill_w / 2.0 - 2.0);
             let pill_x = mid_x - pill_w / 2.0;
             let pill_y = line_y - pill_h / 2.0;
 

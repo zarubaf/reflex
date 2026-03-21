@@ -25,5 +25,6 @@ pub fn register(cx: &mut App) {
         KeyBinding::new("cmd-shift-m", RemoveCursor, None),
         KeyBinding::new("[", PrevCursor, None),
         KeyBinding::new("]", NextCursor, None),
+        KeyBinding::new("cmd-l", GotoCycle, None),
     ]);
 }
