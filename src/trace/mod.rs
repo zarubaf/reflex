@@ -1,9 +1,11 @@
 pub mod generator;
 pub mod konata;
 pub mod model;
+pub mod uscope_source;
 
 use model::PipelineTrace;
 use std::io::Read;
+use std::path::Path;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -26,6 +28,12 @@ pub trait TraceSource {
         let _ = first_bytes;
         false
     }
+    /// Load from a file path. Some formats (e.g. uscope) need seeking and
+    /// cannot work with a generic Read stream.
+    fn load_file(&self, path: &Path) -> Result<PipelineTrace, TraceError> {
+        let mut file = std::fs::File::open(path)?;
+        self.load(&mut file)
+    }
 }
 
 /// Registry of trace format parsers.
@@ -39,6 +47,7 @@ impl TraceRegistry {
             sources: Vec::new(),
         };
         reg.register(Box::new(konata::KonataSource));
+        reg.register(Box::new(uscope_source::UscopeSource));
         reg
     }
 
@@ -53,8 +62,7 @@ impl TraceRegistry {
         // Try by extension first.
         for source in &self.sources {
             if source.file_extensions().contains(&ext) {
-                let mut file = std::fs::File::open(path)?;
-                return source.load(&mut file);
+                return source.load_file(path);
             }
         }
 
@@ -66,8 +74,7 @@ impl TraceRegistry {
 
         for source in &self.sources {
             if source.detect(&buf[..n]) {
-                let mut file = std::fs::File::open(path)?;
-                return source.load(&mut file);
+                return source.load_file(path);
             }
         }
 
