@@ -23,10 +23,27 @@ fn force_dark_appearance() {
 }
 
 /// Set the application dock icon from the bundled .icns file.
+/// Set the application dock icon from the bundled .icns file.
+/// Only used when running outside a .app bundle (e.g. `cargo run`),
+/// since bundled apps get their icon from Info.plist's CFBundleIconFile
+/// with proper macOS superellipse masking applied by the system.
 #[cfg(target_os = "macos")]
 fn set_app_icon() {
     use objc2::{AnyThread, MainThreadMarker};
     use objc2_app_kit::{NSApplication, NSImage};
+
+    // Skip if running from a .app bundle — the system handles the icon.
+    if let Some(bundle_path) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.canonicalize().ok())
+    {
+        if bundle_path
+            .to_string_lossy()
+            .contains(".app/Contents/MacOS/")
+        {
+            return;
+        }
+    }
 
     let icon_bytes = include_bytes!("../resources/reflex.icns");
     let mtm = unsafe { MainThreadMarker::new_unchecked() };
