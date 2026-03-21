@@ -13,9 +13,9 @@ use crate::title_bar::render_title_bar;
 use crate::trace::generator::{self, GeneratorConfig};
 use crate::trace::model::PipelineTrace;
 use crate::trace::TraceRegistry;
+use crate::views::goto_bar::GotoBar;
 use crate::views::help_overlay::HelpOverlay;
 use crate::views::pipeline_panel::PipelinePanel;
-use crate::views::goto_bar::GotoBar;
 use crate::views::search_bar::SearchBar;
 use crate::views::status_bar::StatusBar;
 
@@ -450,12 +450,7 @@ impl AppView {
         self.search_bar.update(cx, |sb, cx| sb.toggle(window, cx));
     }
 
-    fn handle_goto_cycle(
-        &mut self,
-        _: &GotoCycle,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn handle_goto_cycle(&mut self, _: &GotoCycle, window: &mut Window, cx: &mut Context<Self>) {
         self.goto_bar.update(cx, |gb, cx| gb.toggle(window, cx));
     }
 

@@ -56,9 +56,7 @@ fn resolve_cpu_protocol(reader: &Reader) -> Result<CpuProtocolIds, TraceError> {
         .scopes
         .iter()
         .find(|s| schema.get_string(s.protocol) == Some("cpu"))
-        .ok_or_else(|| {
-            TraceError::UnsupportedFormat("no CPU protocol scope found".into())
-        })?;
+        .ok_or_else(|| TraceError::UnsupportedFormat("no CPU protocol scope found".into()))?;
 
     // Get clock period
     let clock_id = cpu_scope.clock_id;
@@ -72,12 +70,8 @@ fn resolve_cpu_protocol(reader: &Reader) -> Result<CpuProtocolIds, TraceError> {
     let entities_storage = schema
         .storages
         .iter()
-        .find(|s| {
-            s.scope_id == cpu_scope.scope_id && schema.get_string(s.name) == Some("entities")
-        })
-        .ok_or_else(|| {
-            TraceError::UnsupportedFormat("no entities storage found".into())
-        })?;
+        .find(|s| s.scope_id == cpu_scope.scope_id && schema.get_string(s.name) == Some("entities"))
+        .ok_or_else(|| TraceError::UnsupportedFormat("no entities storage found".into()))?;
 
     // Find field indices by name
     let field_entity_id = find_field_index(schema, entities_storage, "entity_id")?;
@@ -88,13 +82,9 @@ fn resolve_cpu_protocol(reader: &Reader) -> Result<CpuProtocolIds, TraceError> {
         schema
             .events
             .iter()
-            .find(|e| {
-                e.scope_id == cpu_scope.scope_id && schema.get_string(e.name) == Some(name)
-            })
+            .find(|e| e.scope_id == cpu_scope.scope_id && schema.get_string(e.name) == Some(name))
             .map(|e| e.event_type_id)
-            .ok_or_else(|| {
-                TraceError::UnsupportedFormat(format!("no '{}' event found", name))
-            })
+            .ok_or_else(|| TraceError::UnsupportedFormat(format!("no '{}' event found", name)))
     };
 
     let stage_transition_event_id = find_event("stage_transition")?;
@@ -136,7 +126,10 @@ fn find_field_index(
 fn read_stage_names(reader: &Reader) -> Result<Vec<String>, TraceError> {
     // Try DUT property first (canonical ordering)
     if let Some(stages_str) = reader.dut_property("cpu.pipeline_stages") {
-        let names: Vec<String> = stages_str.split(',').map(|s| s.trim().to_string()).collect();
+        let names: Vec<String> = stages_str
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .collect();
         if !names.is_empty() {
             return Ok(names);
         }
@@ -148,19 +141,12 @@ fn read_stage_names(reader: &Reader) -> Result<Vec<String>, TraceError> {
         .enums
         .iter()
         .find(|e| schema.get_string(e.name) == Some("pipeline_stage"))
-        .ok_or_else(|| {
-            TraceError::UnsupportedFormat("no pipeline_stage enum found".into())
-        })?;
+        .ok_or_else(|| TraceError::UnsupportedFormat("no pipeline_stage enum found".into()))?;
 
     let mut names: Vec<String> = pipeline_enum
         .values
         .iter()
-        .map(|v| {
-            schema
-                .get_string(v.name)
-                .unwrap_or("?")
-                .to_string()
-        })
+        .map(|v| schema.get_string(v.name).unwrap_or("?").to_string())
         .collect();
 
     if names.is_empty() {
@@ -254,9 +240,9 @@ fn is_disasm_line(text: &str, pc: u64) -> bool {
 }
 
 fn parse_uscope(path: &Path) -> Result<PipelineTrace, TraceError> {
-    let path_str = path.to_str().ok_or_else(|| {
-        TraceError::UnsupportedFormat("invalid path encoding".into())
-    })?;
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| TraceError::UnsupportedFormat("invalid path encoding".into()))?;
 
     let mut reader = Reader::open(path_str).map_err(TraceError::Io)?;
     let ids = resolve_cpu_protocol(&reader)?;
@@ -279,9 +265,7 @@ fn parse_uscope(path: &Path) -> Result<PipelineTrace, TraceError> {
     let num_segments = reader.segment_count();
 
     for seg_idx in 0..num_segments {
-        let (_storages, events, ops) = reader
-            .segment_replay(seg_idx)
-            .map_err(TraceError::Io)?;
+        let (_storages, events, ops) = reader.segment_replay(seg_idx).map_err(TraceError::Io)?;
 
         // Merge ops and events by time, ops first at same timestamp
         let mut items: Vec<MergedItem> = Vec::with_capacity(ops.len() + events.len());
@@ -351,22 +335,17 @@ fn parse_uscope(path: &Path) -> Result<PipelineTrace, TraceError> {
 
                     if ev.event_type_id == ids.stage_transition_event_id {
                         if ev.payload.len() >= 5 {
-                            let entity_id =
-                                u32::from_le_bytes(ev.payload[..4].try_into().unwrap());
+                            let entity_id = u32::from_le_bytes(ev.payload[..4].try_into().unwrap());
                             let stage = ev.payload[4] as usize;
 
                             if let Some(b) = builders.get_mut(&entity_id) {
-                                let stage_idx = stage_name_indices
-                                    .get(stage)
-                                    .copied()
-                                    .unwrap_or(0);
+                                let stage_idx = stage_name_indices.get(stage).copied().unwrap_or(0);
                                 b.open_stage(stage_idx, cycle);
                             }
                         }
                     } else if ev.event_type_id == ids.flush_event_id {
                         if ev.payload.len() >= 4 {
-                            let entity_id =
-                                u32::from_le_bytes(ev.payload[..4].try_into().unwrap());
+                            let entity_id = u32::from_le_bytes(ev.payload[..4].try_into().unwrap());
 
                             if let Some(mut b) = builders.remove(&entity_id) {
                                 b.close_current_stage(cycle);
@@ -379,10 +358,8 @@ fn parse_uscope(path: &Path) -> Result<PipelineTrace, TraceError> {
                         }
                     } else if ev.event_type_id == ids.annotate_event_id {
                         if ev.payload.len() >= 8 {
-                            let entity_id =
-                                u32::from_le_bytes(ev.payload[..4].try_into().unwrap());
-                            let text_ref =
-                                u32::from_le_bytes(ev.payload[4..8].try_into().unwrap());
+                            let entity_id = u32::from_le_bytes(ev.payload[..4].try_into().unwrap());
+                            let text_ref = u32::from_le_bytes(ev.payload[4..8].try_into().unwrap());
 
                             if let Some(b) = builders.get_mut(&entity_id) {
                                 if let Some(st) = reader.string_table() {
@@ -401,20 +378,16 @@ fn parse_uscope(path: &Path) -> Result<PipelineTrace, TraceError> {
                                 }
                             }
                         }
-                    } else if ev.event_type_id == ids.dependency_event_id
-                        && ev.payload.len() >= 9
-                    {
-                        let src_id =
-                            u32::from_le_bytes(ev.payload[..4].try_into().unwrap());
-                        let dst_id =
-                            u32::from_le_bytes(ev.payload[4..8].try_into().unwrap());
+                    } else if ev.event_type_id == ids.dependency_event_id && ev.payload.len() >= 9 {
+                        let src_id = u32::from_le_bytes(ev.payload[..4].try_into().unwrap());
+                        let dst_id = u32::from_le_bytes(ev.payload[4..8].try_into().unwrap());
                         let dep_type = ev.payload[8];
 
                         let kind = match dep_type {
-                            0 => DepKind::Data,    // raw
-                            1 => DepKind::Data,    // war
-                            2 => DepKind::Data,    // waw
-                            3 => DepKind::Memory,  // structural
+                            0 => DepKind::Data,   // raw
+                            1 => DepKind::Data,   // war
+                            2 => DepKind::Data,   // waw
+                            3 => DepKind::Memory, // structural
                             _ => DepKind::Data,
                         };
 
@@ -437,7 +410,11 @@ fn parse_uscope(path: &Path) -> Result<PipelineTrace, TraceError> {
     }
 
     // Sort by first_cycle, then by reflex_id for stable ordering
-    finalized.sort_by(|a, b| a.first_cycle.cmp(&b.first_cycle).then(a.reflex_id.cmp(&b.reflex_id)));
+    finalized.sort_by(|a, b| {
+        a.first_cycle
+            .cmp(&b.first_cycle)
+            .then(a.reflex_id.cmp(&b.reflex_id))
+    });
 
     // Emit to PipelineTrace
     for b in finalized {
@@ -508,6 +485,9 @@ mod tests {
         let has_mnemonic = trace.instructions.iter().any(|i| {
             i.disasm.contains("jal") || i.disasm.contains("addi") || i.disasm.contains("auipc")
         });
-        assert!(has_mnemonic, "at least some instructions should have mnemonics in disasm");
+        assert!(
+            has_mnemonic,
+            "at least some instructions should have mnemonics in disasm"
+        );
     }
 }
