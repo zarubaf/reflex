@@ -86,10 +86,12 @@ fn main() {
         #[cfg(target_os = "macos")]
         set_app_icon();
 
-        // Override theme colors to match our dark color scheme.
+        // Force dark theme, then fine-tune colors to match our palette.
         {
-            use gpui_component::theme::Theme;
+            use gpui_component::theme::{Theme, ThemeMode};
+            Theme::change(ThemeMode::Dark, None, cx);
             let theme = Theme::global_mut(cx);
+            theme.background = theme::colors::BG_PRIMARY;
             theme.tab_bar = theme::colors::BG_PRIMARY;
             theme.tab = gpui::transparent_black();
             theme.tab_active = theme::colors::BG_SECONDARY;

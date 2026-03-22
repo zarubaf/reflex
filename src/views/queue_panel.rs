@@ -274,7 +274,7 @@ impl QueuePanel {
             for (i, e) in entries.iter().enumerate() {
                 let instr = &ts.trace.instructions[e.row];
                 let disasm = truncate_disasm(&instr.disasm, 50);
-                let wait_cycles = cursor_cycle.saturating_sub(instr.first_cycle);
+                let wait_cycles = cursor_cycle.saturating_sub(e.stage_start_cycle);
 
                 dq_sections.push(
                     self.queue_row(
@@ -378,12 +378,12 @@ impl QueuePanel {
             for (i, e) in entries.iter().enumerate() {
                 let instr = &ts.trace.instructions[e.row];
                 let disasm = truncate_disasm(&instr.disasm, 45);
-                let wait_cycles = cursor_cycle.saturating_sub(instr.first_cycle);
+                let wait_cycles = cursor_cycle.saturating_sub(e.stage_start_cycle);
 
-                let (status_label, status_color) = if e.is_ready {
-                    ("rdy", READY_COLOR)
+                let status_color = if e.is_ready {
+                    READY_COLOR
                 } else {
-                    ("wait", WAITING_COLOR)
+                    WAITING_COLOR
                 };
 
                 iq_sections.push(
@@ -393,9 +393,17 @@ impl QueuePanel {
                         selected_row,
                         vec![
                             div()
-                                .w(px(28.0))
-                                .text_color(status_color)
-                                .child(status_label.to_string()),
+                                .w(px(14.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    div()
+                                        .w(px(6.0))
+                                        .h(px(6.0))
+                                        .rounded(px(3.0))
+                                        .bg(status_color),
+                                ),
                             div()
                                 .flex_1()
                                 .text_color(colors::TEXT_PRIMARY)

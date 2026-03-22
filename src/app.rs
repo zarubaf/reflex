@@ -808,8 +808,9 @@ impl AppView {
     ) {
         // Only toggle for bottom dock (left/right have no collapsed header).
         if self.queue_placement == DockPlacement::Bottom {
-            self.dock_area
-                .update(cx, |da, cx| da.toggle_dock(DockPlacement::Bottom, window, cx));
+            self.dock_area.update(cx, |da, cx| {
+                da.toggle_dock(DockPlacement::Bottom, window, cx)
+            });
         }
     }
 

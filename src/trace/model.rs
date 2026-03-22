@@ -73,6 +73,8 @@ pub struct QueueSlotEntry {
     pub stage: StageNameIdx,
     /// Whether the instruction is ready to issue (all operands available).
     pub is_ready: bool,
+    /// Cycle when the instruction entered this stage.
+    pub stage_start_cycle: u32,
 }
 
 /// Queue occupancy at a specific cycle.
@@ -197,18 +199,20 @@ impl PipelineTrace {
             // Find which stage this instruction is in at `cycle`.
             let stages =
                 &self.stages[instr.stage_range.start as usize..instr.stage_range.end as usize];
-            let mut current_stage = None;
+            let mut current_span = None;
             for span in stages {
                 if span.start_cycle <= cycle && cycle < span.end_cycle {
-                    current_stage = Some(span.stage_name_idx);
+                    current_span = Some(span);
                     break;
                 }
             }
 
-            let stage = match current_stage {
+            let span = match current_span {
                 Some(s) => s,
                 None => continue,
             };
+            let stage = span.stage_name_idx;
+            let stage_start_cycle = span.start_cycle;
 
             let is_ready = instr.ready_cycle.map(|rc| rc <= cycle).unwrap_or(false);
 
@@ -220,6 +224,7 @@ impl PipelineTrace {
                         row,
                         stage,
                         is_ready,
+                        stage_start_cycle,
                     });
                 }
             }
@@ -231,6 +236,7 @@ impl PipelineTrace {
                     row,
                     stage,
                     is_ready,
+                    stage_start_cycle,
                 });
             }
 
@@ -241,6 +247,7 @@ impl PipelineTrace {
                     row,
                     stage,
                     is_ready,
+                    stage_start_cycle,
                 });
             }
         }

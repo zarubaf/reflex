@@ -527,7 +527,8 @@ fn paint_timeline(
                     }
 
                     let x = vp.cycle_to_pixel(span.start_cycle as f64);
-                    let w = ((span.end_cycle - span.start_cycle) as f32) * vp.pixels_per_cycle;
+                    let w = (span.end_cycle.saturating_sub(span.start_cycle) as f32)
+                        * vp.pixels_per_cycle;
 
                     if x + w < 0.0 || x > canvas_w {
                         continue;
