@@ -49,6 +49,18 @@ pub fn setup(cx: &App) {
             items: vec![
                 MenuItem::action("Next Tab", NextTab),
                 MenuItem::action("Previous Tab", PrevTab),
+                MenuItem::separator(),
+                MenuItem::action("Toggle Queues", ToggleQueues),
+                MenuItem::action("Queues Bottom", LayoutBottom),
+                MenuItem::action("Queues Left", LayoutLeft),
+                MenuItem::action("Queues Right", LayoutRight),
+            ],
+        },
+        Menu {
+            name: "Tools".into(),
+            items: vec![
+                MenuItem::action("Connect to Surfer (WCP)", WcpConnect),
+                MenuItem::action("Disconnect from Surfer", WcpDisconnect),
             ],
         },
     ]);

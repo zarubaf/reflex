@@ -4709,6 +4709,9 @@ dependencies = [
 name = "reflex"
 version = "0.1.0-dev"
 dependencies = [
+ "anyhow",
+ "async-net",
+ "futures-lite 2.6.1",
  "gpui",
  "gpui-component",
  "gpui-component-assets",
@@ -4719,6 +4722,7 @@ dependencies = [
  "rand 0.8.5",
  "serde",
  "serde_json",
+ "smol",
  "thiserror 2.0.18",
  "uscope",
 ]

@@ -1,3 +1,4 @@
+use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 
 use crate::app::TraceState;
@@ -6,11 +7,15 @@ use crate::theme::colors;
 /// Bottom status bar showing cycle, row, zoom, FPS info.
 pub struct StatusBar {
     state: Entity<TraceState>,
+    pub wcp_connected: bool,
 }
 
 impl StatusBar {
     pub fn new(state: Entity<TraceState>) -> Self {
-        Self { state }
+        Self {
+            state,
+            wcp_connected: false,
+        }
     }
 }
 
@@ -89,6 +94,29 @@ impl Render for StatusBar {
                     .child(sel_info)
                     .child(cursor_info),
             )
-            .child(div().flex().items_center().gap_2().child(fps_info))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_4()
+                    .when(self.wcp_connected, |el| {
+                        el.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .child(div().w(px(6.0)).h(px(6.0)).rounded(px(3.0)).bg(
+                                    gpui::Hsla {
+                                        h: 120.0 / 360.0,
+                                        s: 0.7,
+                                        l: 0.45,
+                                        a: 1.0,
+                                    },
+                                ))
+                                .child("WCP"),
+                        )
+                    })
+                    .child(fps_info),
+            )
     }
 }

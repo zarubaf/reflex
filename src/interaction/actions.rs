@@ -28,5 +28,7 @@ actions!([
     LayoutBottom,
     LayoutLeft,
     LayoutRight,
+    WcpConnect,
+    WcpDisconnect,
     Quit,
 ]);

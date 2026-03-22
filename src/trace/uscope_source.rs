@@ -380,6 +380,7 @@ fn parse_uscope(path: &Path) -> Result<PipelineTrace, TraceError> {
 
     // Populate trace metadata from the uscope file.
     populate_metadata(&reader, path, &ids, &mut trace);
+    trace.period_ps = Some(ids.period_ps);
 
     // Pre-intern stage names
     let stage_name_indices: Vec<u16> = ids

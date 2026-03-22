@@ -96,6 +96,8 @@ pub struct PipelineTrace {
     pub dependencies: Vec<Dependency>,
     /// Key-value metadata from the trace source (DUT properties, format info, etc.).
     pub metadata: Vec<(String, String)>,
+    /// Clock period in picoseconds (from uscope traces). Enables cycle↔timestamp conversion.
+    pub period_ps: Option<u64>,
     stage_names: Vec<String>,
     stage_name_map: HashMap<String, StageNameIdx>,
     id_to_row: HashMap<u32, usize>,
@@ -108,6 +110,7 @@ impl PipelineTrace {
             stages: Vec::new(),
             dependencies: Vec::new(),
             metadata: Vec::new(),
+            period_ps: None,
             stage_names: Vec::new(),
             stage_name_map: HashMap::new(),
             id_to_row: HashMap::new(),

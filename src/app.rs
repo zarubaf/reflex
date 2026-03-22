@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui_component::dock::{DockArea, DockItem, DockPlacement};
+use gpui_component::dock::{DockArea, DockItem, DockPlacement, PanelView};
 use gpui_component::tab::{Tab, TabBar};
 use gpui_component::{Icon, IconName};
 
@@ -18,10 +18,12 @@ use crate::trace::TraceRegistry;
 use crate::views::goto_bar::GotoBar;
 use crate::views::help_overlay::HelpOverlay;
 use crate::views::info_overlay::InfoOverlay;
+use crate::views::log_panel::{LogBuffer, LogPanel};
 use crate::views::pipeline_panel::PipelinePanel;
 use crate::views::queue_panel::{QueueKind, QueuePanel};
 use crate::views::search_bar::SearchBar;
 use crate::views::status_bar::StatusBar;
+use crate::wcp::WcpClient;
 
 /// Decode percent-encoded characters in a URL path (e.g. `%20` → ` `).
 fn percent_decode(input: &str) -> String {
@@ -234,6 +236,8 @@ pub struct AppView {
     retire_queue_tab: Entity<QueuePanel>,
     dispatch_queue_tab: Entity<QueuePanel>,
     issue_queue_tab: Entity<QueuePanel>,
+    log_panel: Entity<LogPanel>,
+    log_buffer: LogBuffer,
     queue_placement: DockPlacement,
     dock_area: Entity<DockArea>,
     status_bar: Entity<StatusBar>,
@@ -243,6 +247,9 @@ pub struct AppView {
     info_overlay: Entity<InfoOverlay>,
     focus_handle: FocusHandle,
     pending_open_urls: Arc<Mutex<Vec<String>>>,
+    wcp_client: Option<Arc<WcpClient>>,
+    /// Last cursor cycle sent to WCP, to avoid redundant sends.
+    last_wcp_cursor: Option<u64>,
 }
 
 impl AppView {
@@ -266,12 +273,15 @@ impl AppView {
             cx.new(|cx| QueuePanel::new(placeholder.clone(), QueueKind::Dispatch, cx));
         let issue_queue_tab =
             cx.new(|cx| QueuePanel::new(placeholder.clone(), QueueKind::Issue, cx));
+        let log_buffer = LogBuffer::new();
+        let log_panel = cx.new(|cx| LogPanel::new(log_buffer.clone(), cx));
         let queue_placement = DockPlacement::Bottom;
         let dock_area = Self::build_dock_area(
             &pipeline_panel,
             &retire_queue_tab,
             &dispatch_queue_tab,
             &issue_queue_tab,
+            &log_panel,
             queue_placement,
             false,
             window,
@@ -287,6 +297,8 @@ impl AppView {
             retire_queue_tab,
             dispatch_queue_tab,
             issue_queue_tab,
+            log_panel,
+            log_buffer,
             queue_placement,
             dock_area,
             status_bar: cx.new(|_cx| StatusBar::new(placeholder.clone())),
@@ -296,6 +308,8 @@ impl AppView {
             info_overlay,
             focus_handle,
             pending_open_urls,
+            wcp_client: None,
+            last_wcp_cursor: None,
         };
 
         if let Some(ref path) = file_path {
@@ -348,6 +362,7 @@ impl AppView {
         retire_tab: &Entity<QueuePanel>,
         dispatch_tab: &Entity<QueuePanel>,
         issue_tab: &Entity<QueuePanel>,
+        log_panel: &Entity<LogPanel>,
         placement: DockPlacement,
         queue_visible: bool,
         window: &mut Window,
@@ -357,6 +372,7 @@ impl AppView {
         let rq = retire_tab.clone();
         let dq = dispatch_tab.clone();
         let iq = issue_tab.clone();
+        let lp = log_panel.clone();
         cx.new(|cx| {
             let mut dock_area = DockArea::new("main", None, window, cx);
             let weak = cx.entity().downgrade();
@@ -364,10 +380,12 @@ impl AppView {
             dock_area.set_center(center, window, cx);
 
             // For left/right docks, stack queue tabs vertically; for bottom, horizontally.
+            // Log tab is grouped with Issue Queues (background tab, not active by default).
+            let iq_log_tabs: Vec<Arc<dyn PanelView>> = vec![Arc::new(iq), Arc::new(lp)];
             let queue_items = vec![
                 DockItem::tab(rq, &weak, window, cx),
                 DockItem::tab(dq, &weak, window, cx),
-                DockItem::tab(iq, &weak, window, cx),
+                DockItem::tabs(iq_log_tabs, &weak, window, cx),
             ];
             let queue_split = match placement {
                 DockPlacement::Bottom => DockItem::h_split(queue_items, &weak, window, cx),
@@ -443,11 +461,13 @@ impl AppView {
                 cx.new(|cx| QueuePanel::new(state.clone(), QueueKind::Dispatch, cx));
             self.issue_queue_tab =
                 cx.new(|cx| QueuePanel::new(state.clone(), QueueKind::Issue, cx));
+            self.log_panel = cx.new(|cx| LogPanel::new(self.log_buffer.clone(), cx));
             self.dock_area = Self::build_dock_area(
                 &self.pipeline_panel,
                 &self.retire_queue_tab,
                 &self.dispatch_queue_tab,
                 &self.issue_queue_tab,
+                &self.log_panel,
                 self.queue_placement,
                 queue_visible,
                 window,
@@ -832,11 +852,13 @@ impl AppView {
                 cx.new(|cx| QueuePanel::new(state.clone(), QueueKind::Dispatch, cx));
             self.issue_queue_tab =
                 cx.new(|cx| QueuePanel::new(state.clone(), QueueKind::Issue, cx));
+            self.log_panel = cx.new(|cx| LogPanel::new(self.log_buffer.clone(), cx));
             self.dock_area = Self::build_dock_area(
                 &self.pipeline_panel,
                 &self.retire_queue_tab,
                 &self.dispatch_queue_tab,
                 &self.issue_queue_tab,
+                &self.log_panel,
                 self.queue_placement,
                 true, // always open when actively switching layout
                 window,
@@ -872,6 +894,84 @@ impl AppView {
     ) {
         self.switch_queue_layout(DockPlacement::Right, window, cx);
     }
+
+    fn handle_wcp_connect(&mut self, _: &WcpConnect, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.wcp_client.is_some() {
+            return; // Already connected.
+        }
+        let log = self.log_buffer.clone();
+        cx.spawn(async move |this, cx| {
+            match WcpClient::connect("127.0.0.1:54321", log.clone()).await {
+                Ok(client) => {
+                    let client = Arc::new(client);
+                    let _ = cx.update(|cx| {
+                        let _ = this.update(cx, |app, cx| {
+                            app.wcp_client = Some(client);
+                            app.status_bar.update(cx, |sb, cx| {
+                                sb.wcp_connected = true;
+                                cx.notify();
+                            });
+                            app.log_buffer.push("WCP: connected to Surfer");
+                            cx.notify();
+                        });
+                    });
+                }
+                Err(e) => {
+                    log.push(format!("WCP: connection failed: {}", e));
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn handle_wcp_disconnect(
+        &mut self,
+        _: &WcpDisconnect,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.wcp_client.take().is_some() {
+            self.last_wcp_cursor = None;
+            self.status_bar.update(cx, |sb, cx| {
+                sb.wcp_connected = false;
+                cx.notify();
+            });
+            self.log_buffer.push("WCP: disconnected");
+            cx.notify();
+        }
+    }
+
+    /// Push the active cursor position to Surfer via WCP.
+    fn sync_cursor_to_wcp(&mut self, cx: &mut Context<Self>) {
+        let Some(client) = &self.wcp_client else {
+            return;
+        };
+        let Some(state) = self.active_state() else {
+            return;
+        };
+        let ts = state.read(cx);
+        let Some(period_ps) = ts.trace.period_ps else {
+            return;
+        };
+        let cycle = ts.cursor_state.cursors[ts.cursor_state.active_idx].cycle;
+        // TODO: make configurable — currently assumes VCD $timescale 100ps.
+        let timestamp = ((cycle * period_ps as f64) / 100.0) as u64;
+
+        // Avoid redundant sends.
+        if self.last_wcp_cursor == Some(timestamp) {
+            return;
+        }
+        self.last_wcp_cursor = Some(timestamp);
+
+        let client = client.clone();
+        let log = self.log_buffer.clone();
+        cx.spawn(async move |_, _| {
+            if let Err(e) = client.send_cursor(timestamp).await {
+                log.push(format!("WCP: send_cursor failed: {}", e));
+            }
+        })
+        .detach();
+    }
 }
 
 impl Focusable for AppView {
@@ -891,6 +991,11 @@ impl Render for AppView {
         // Process files dropped on dock icon or opened via Finder.
         if !self.pending_open_urls.lock().unwrap().is_empty() {
             self.drain_pending_urls(window, cx);
+        }
+
+        // Sync cursor to Surfer via WCP (deduped, only sends on change).
+        if self.wcp_client.is_some() {
+            self.sync_cursor_to_wcp(cx);
         }
 
         let has_tabs = !self.tabs.is_empty();
@@ -1013,6 +1118,8 @@ impl Render for AppView {
             .on_action(cx.listener(Self::handle_layout_bottom))
             .on_action(cx.listener(Self::handle_layout_left))
             .on_action(cx.listener(Self::handle_layout_right))
+            .on_action(cx.listener(Self::handle_wcp_connect))
+            .on_action(cx.listener(Self::handle_wcp_disconnect))
             // File drag & drop onto window — opens in new tab.
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
                 if let Some(path) = paths.paths().first() {

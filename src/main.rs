@@ -4,6 +4,7 @@ mod theme;
 mod title_bar;
 mod trace;
 mod views;
+mod wcp;
 
 use app::AppView;
 use gpui::*;

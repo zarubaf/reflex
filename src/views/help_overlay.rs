@@ -36,6 +36,10 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("Alt + Cmd + 2", "Queues left"),
     ("Alt + Cmd + 3", "Queues right"),
     ("", ""),
+    ("Surfer WCP", ""),
+    ("Alt + Cmd + W", "Connect to Surfer"),
+    ("Alt + Cmd + Shift + W", "Disconnect"),
+    ("", ""),
     ("Cmd + I", "Trace info"),
     ("?", "Toggle this help"),
 ];
