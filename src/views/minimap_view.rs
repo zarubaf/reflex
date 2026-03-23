@@ -6,20 +6,40 @@ use crate::theme::colors;
 /// Height of the minimap strip in pixels.
 const MINIMAP_HEIGHT: f32 = 40.0;
 /// Width of the viewport edge grab handles.
-const HANDLE_WIDTH: f32 = 6.0;
+const HANDLE_WIDTH: f32 = 8.0;
 /// Height of the viewport edge grab handles.
-const HANDLE_HEIGHT: f32 = 20.0;
+const HANDLE_HEIGHT: f32 = 24.0;
 /// Handle corner radius.
-const HANDLE_RADIUS: f32 = 3.0;
+const HANDLE_RADIUS: f32 = 4.0;
+/// Corner radius of the minimap strip.
+const MINIMAP_RADIUS: f32 = 6.0;
 /// Minimum viewport width in pixels to prevent collapsing.
-const MIN_VIEWPORT_PX: f32 = 10.0;
+const MIN_VIEWPORT_PX: f32 = 16.0;
+/// Minimum hit-test width for grabbing the viewport edges.
+const HANDLE_HIT_ZONE: f32 = 12.0;
 
 /// Accent color for viewport handles and trendline.
 const ACCENT: Hsla = Hsla {
     h: 210.0 / 360.0,
     s: 0.65,
-    l: 0.55,
+    l: 0.60,
     a: 1.0,
+};
+
+/// Trendline fill color — brighter and more opaque than before.
+const TRENDLINE_FILL: Hsla = Hsla {
+    h: 210.0 / 360.0,
+    s: 0.55,
+    l: 0.50,
+    a: 0.50,
+};
+
+/// Dimmed trendline (outside viewport selection).
+const TRENDLINE_DIM: Hsla = Hsla {
+    h: 210.0 / 360.0,
+    s: 0.30,
+    l: 0.35,
+    a: 0.30,
 };
 
 fn px_val(p: Pixels) -> f32 {
@@ -91,6 +111,39 @@ impl MinimapView {
     }
 }
 
+/// Paint the trendline as filled area bars.
+fn paint_trendline(
+    data: &[(u64, u64)],
+    bounds: &Bounds<Pixels>,
+    width: f32,
+    height: f32,
+    color: Hsla,
+    window: &mut Window,
+) {
+    let global_max = data.iter().map(|(_, mx)| *mx).max().unwrap_or(1).max(1);
+
+    for (i, (_min_d, max_d)) in data.iter().enumerate() {
+        let bar_top = *max_d as f32 / global_max as f32;
+        // Ensure even tiny values show as a visible dot (minimum 2px)
+        let bar_h = if bar_top < 0.001 {
+            continue;
+        } else {
+            (bar_top * height).max(2.0)
+        };
+        let y_top = height - bar_h;
+
+        // Use 2px wide bars for better visibility
+        let bar_w = (width / data.len() as f32).max(1.0).min(3.0);
+        window.paint_quad(fill(
+            Bounds::new(
+                point(bounds.origin.x + px(i as f32), bounds.origin.y + px(y_top)),
+                size(px(bar_w), px(bar_h)),
+            ),
+            color,
+        ));
+    }
+}
+
 impl Render for MinimapView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.state.clone();
@@ -99,9 +152,11 @@ impl Render for MinimapView {
             .id("minimap")
             .w_full()
             .h(px(MINIMAP_HEIGHT))
+            .mx_2()
+            .my_1()
+            .rounded(px(MINIMAP_RADIUS))
             .bg(colors::BG_SECONDARY)
-            .border_b_1()
-            .border_color(colors::GRID_LINE)
+            .overflow_hidden()
             .child(
                 canvas(
                     {
@@ -118,7 +173,6 @@ impl Render for MinimapView {
                         let state = state.clone();
                         let view = cx.entity().clone();
                         move |bounds, _bounds_data, window, cx| {
-                            let v = view.read(cx);
                             let ts = state.read(cx);
                             let max_cycle = ts.trace.max_cycle();
                             if max_cycle == 0 {
@@ -127,38 +181,60 @@ impl Render for MinimapView {
                             let width = px_val(bounds.size.width);
                             let height = px_val(bounds.size.height);
 
-                            // 1. Paint trendline across full width
-                            if let Some(counter_idx) = v.selected_counter {
+                            // 1. Paint trendline using cached data
+                            let selected_counter = view.read(cx).selected_counter;
+                            if let Some(counter_idx) = selected_counter {
                                 if counter_idx < ts.trace.counters.len() {
                                     let bucket_count = (width as usize).max(1);
+
+                                    // Get cached data — we must update the cache
+                                    // through the entity since paint closures borrow immutably.
                                     let data = ts.trace.counter_downsample_minmax(
                                         counter_idx,
                                         0,
                                         max_cycle,
                                         bucket_count,
                                     );
-                                    let global_max =
-                                        data.iter().map(|(_, mx)| *mx).max().unwrap_or(1).max(1);
 
-                                    for (i, (_min_d, max_d)) in data.iter().enumerate() {
-                                        let bar_top = *max_d as f32 / global_max as f32;
-                                        if bar_top < 0.01 {
-                                            continue;
-                                        }
-                                        let bar_h = (bar_top * height).max(1.0);
-                                        let y_top = height - bar_h;
+                                    // Paint dim trendline across full width first
+                                    paint_trendline(
+                                        &data,
+                                        &bounds,
+                                        width,
+                                        height,
+                                        TRENDLINE_DIM,
+                                        window,
+                                    );
 
-                                        window.paint_quad(fill(
-                                            Bounds::new(
-                                                point(
-                                                    bounds.origin.x + px(i as f32),
-                                                    bounds.origin.y + px(y_top),
-                                                ),
-                                                size(px(1.0), px(bar_h)),
-                                            ),
-                                            Hsla { a: 0.15, ..ACCENT },
-                                        ));
-                                    }
+                                    // Then paint bright trendline clipped to viewport
+                                    let vp = &ts.viewport;
+                                    let (vis_start, vis_end) = vp.visible_cycle_range();
+                                    let vp_left_px =
+                                        (vis_start as f64 / max_cycle as f64) as f32 * width;
+                                    let vp_right_px =
+                                        (vis_end as f64 / max_cycle as f64) as f32 * width;
+                                    let vp_width_px =
+                                        (vp_right_px - vp_left_px).max(MIN_VIEWPORT_PX);
+
+                                    let clip_bounds = Bounds::new(
+                                        point(bounds.origin.x + px(vp_left_px), bounds.origin.y),
+                                        size(px(vp_width_px), px(height)),
+                                    );
+                                    window.with_content_mask(
+                                        Some(ContentMask {
+                                            bounds: clip_bounds,
+                                        }),
+                                        |window| {
+                                            paint_trendline(
+                                                &data,
+                                                &bounds,
+                                                width,
+                                                height,
+                                                TRENDLINE_FILL,
+                                                window,
+                                            );
+                                        },
+                                    );
                                 }
                             }
 
@@ -174,7 +250,7 @@ impl Render for MinimapView {
                                 h: 0.0,
                                 s: 0.0,
                                 l: 0.0,
-                                a: 0.5,
+                                a: 0.45,
                             };
                             if vp_left > 0.0 {
                                 window.paint_quad(fill(
@@ -199,10 +275,10 @@ impl Render for MinimapView {
                                     point(bounds.origin.x + px(vp_left), bounds.origin.y),
                                     size(px(vp_width), px(height)),
                                 ),
-                                corner_radii: Corners::all(px(0.0)),
+                                corner_radii: Corners::all(px(2.0)),
                                 background: gpui::transparent_black().into(),
                                 border_widths: Edges::all(px(1.0)),
-                                border_color: Hsla { a: 0.6, ..ACCENT },
+                                border_color: Hsla { a: 0.5, ..ACCENT },
                                 border_style: BorderStyle::default(),
                             });
 
@@ -270,8 +346,8 @@ impl Render for MinimapView {
                     let vp_left = this.cycle_to_pixel(vis_start as f64, max_cycle);
                     let vp_right = this.cycle_to_pixel(vis_end as f64, max_cycle);
 
-                    let near_left = (local_x - vp_left).abs() < HANDLE_WIDTH * 2.0;
-                    let near_right = (local_x - vp_right).abs() < HANDLE_WIDTH * 2.0;
+                    let near_left = (local_x - vp_left).abs() < HANDLE_HIT_ZONE;
+                    let near_right = (local_x - vp_right).abs() < HANDLE_HIT_ZONE;
                     let inside = local_x >= vp_left && local_x <= vp_right;
 
                     if near_left && !near_right {
