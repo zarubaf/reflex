@@ -20,6 +20,7 @@ use crate::views::goto_bar::GotoBar;
 use crate::views::help_overlay::HelpOverlay;
 use crate::views::info_overlay::InfoOverlay;
 use crate::views::log_panel::{LogBuffer, LogPanel};
+use crate::views::minimap_view::MinimapView;
 use crate::views::pipeline_panel::PipelinePanel;
 use crate::views::queue_panel::{QueueKind, QueuePanel};
 use crate::views::search_bar::SearchBar;
@@ -235,6 +236,7 @@ pub struct AppView {
     needs_rebuild: bool,
     pipeline_panel: Entity<PipelinePanel>,
     counter_panel: Entity<CounterPanel>,
+    minimap_view: Entity<MinimapView>,
     retire_queue_tab: Entity<QueuePanel>,
     dispatch_queue_tab: Entity<QueuePanel>,
     issue_queue_tab: Entity<QueuePanel>,
@@ -270,6 +272,7 @@ impl AppView {
 
         let pipeline_panel = cx.new(|cx| PipelinePanel::new(placeholder.clone(), window, cx));
         let counter_panel = cx.new(|cx| CounterPanel::new(placeholder.clone(), cx));
+        let minimap_view = cx.new(|cx| MinimapView::new(placeholder.clone(), cx));
         let retire_queue_tab =
             cx.new(|cx| QueuePanel::new(placeholder.clone(), QueueKind::Retire, cx));
         let dispatch_queue_tab =
@@ -299,6 +302,7 @@ impl AppView {
             needs_rebuild: false,
             pipeline_panel,
             counter_panel,
+            minimap_view,
             retire_queue_tab,
             dispatch_queue_tab,
             issue_queue_tab,
@@ -459,6 +463,7 @@ impl AppView {
         if let Some(state) = self.active_state().cloned() {
             self.pipeline_panel = cx.new(|cx| PipelinePanel::new(state.clone(), window, cx));
             self.counter_panel = cx.new(|cx| CounterPanel::new(state.clone(), cx));
+            self.minimap_view = cx.new(|cx| MinimapView::new(state.clone(), cx));
             // Preserve queue panel visibility across rebuilds.
             let queue_visible = self
                 .dock_area
@@ -857,6 +862,7 @@ impl AppView {
         if let Some(state) = self.active_state().cloned() {
             self.pipeline_panel = cx.new(|cx| PipelinePanel::new(state.clone(), window, cx));
             self.counter_panel = cx.new(|cx| CounterPanel::new(state.clone(), cx));
+            self.minimap_view = cx.new(|cx| MinimapView::new(state.clone(), cx));
             self.retire_queue_tab =
                 cx.new(|cx| QueuePanel::new(state.clone(), QueueKind::Retire, cx));
             self.dispatch_queue_tab =
@@ -1148,6 +1154,8 @@ impl Render for AppView {
             })
             // Tab bar (only if tabs exist).
             .when(has_tabs, |el| el.child(tab_bar))
+            // Minimap (only if tabs exist).
+            .when(has_tabs, |el| el.child(self.minimap_view.clone()))
             // Main content or empty state.
             .child(if has_tabs {
                 div()

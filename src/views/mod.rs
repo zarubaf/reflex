@@ -4,6 +4,7 @@ pub mod help_overlay;
 pub mod info_overlay;
 pub mod label_pane;
 pub mod log_panel;
+pub mod minimap_view;
 pub mod pipeline_panel;
 pub mod queue_panel;
 pub mod search_bar;
