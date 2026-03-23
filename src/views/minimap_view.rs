@@ -241,12 +241,14 @@ impl Render for MinimapView {
                                 }
                             }
 
-                            // 2. Compute viewport rectangle
+                            // 2. Compute viewport rectangle (clamped to canvas)
                             let vp = &ts.viewport;
                             let (vis_start, vis_end) = vp.visible_cycle_range();
-                            let vp_left = (vis_start as f64 / max_cycle as f64) as f32 * width;
-                            let vp_right = (vis_end as f64 / max_cycle as f64) as f32 * width;
-                            let vp_width = (vp_right - vp_left).max(MIN_VIEWPORT_PX);
+                            let vp_left = ((vis_start as f64 / max_cycle as f64) as f32 * width)
+                                .clamp(0.0, width);
+                            let vp_right = ((vis_end as f64 / max_cycle as f64) as f32 * width)
+                                .clamp(0.0, width);
+                            let vp_width = (vp_right - vp_left).max(MIN_VIEWPORT_PX).min(width);
 
                             // 3. Dimmed overlays outside viewport
                             let dim_color = Hsla {
@@ -272,11 +274,12 @@ impl Render for MinimapView {
                                 ));
                             }
 
-                            // 4. Viewport border
+                            // 4. Viewport border (clamped to canvas)
+                            let clamped_vp_w = vp_width.min(width - vp_left);
                             window.paint_quad(PaintQuad {
                                 bounds: Bounds::new(
                                     point(bounds.origin.x + px(vp_left), bounds.origin.y),
-                                    size(px(vp_width), px(height)),
+                                    size(px(clamped_vp_w), px(height)),
                                 ),
                                 corner_radii: Corners::all(px(2.0)),
                                 background: gpui::transparent_black().into(),
@@ -285,15 +288,15 @@ impl Render for MinimapView {
                                 border_style: BorderStyle::default(),
                             });
 
-                            // 5. Edge handles (rounded pills)
+                            // 5. Edge handles (rounded pills, clamped to canvas)
                             let handle_y = bounds.origin.y + px((height - HANDLE_HEIGHT) / 2.0);
+                            let left_hx = (vp_left - HANDLE_WIDTH / 2.0).max(0.0);
+                            let right_hx =
+                                (vp_left + vp_width - HANDLE_WIDTH / 2.0).min(width - HANDLE_WIDTH);
                             // Left handle
                             window.paint_quad(PaintQuad {
                                 bounds: Bounds::new(
-                                    point(
-                                        bounds.origin.x + px(vp_left - HANDLE_WIDTH / 2.0),
-                                        handle_y,
-                                    ),
+                                    point(bounds.origin.x + px(left_hx), handle_y),
                                     size(px(HANDLE_WIDTH), px(HANDLE_HEIGHT)),
                                 ),
                                 corner_radii: Corners::all(px(HANDLE_RADIUS)),
@@ -305,11 +308,7 @@ impl Render for MinimapView {
                             // Right handle
                             window.paint_quad(PaintQuad {
                                 bounds: Bounds::new(
-                                    point(
-                                        bounds.origin.x
-                                            + px(vp_left + vp_width - HANDLE_WIDTH / 2.0),
-                                        handle_y,
-                                    ),
+                                    point(bounds.origin.x + px(right_hx), handle_y),
                                     size(px(HANDLE_WIDTH), px(HANDLE_HEIGHT)),
                                 ),
                                 corner_radii: Corners::all(px(HANDLE_RADIUS)),
@@ -404,28 +403,30 @@ impl Render for MinimapView {
                         return;
                     }
 
-                    let px_to_cy =
-                        |lpx: f32| -> f64 { (lpx as f64 / canvas_width as f64) * max_cycle as f64 };
+                    // Convert mouse pixel to absolute cycle position.
+                    let mouse_cycle = (local_x as f64 / canvas_width as f64) * max_cycle as f64;
 
                     match drag {
                         MinimapDrag::Pan {
                             start_mouse_x,
                             start_scroll,
                         } => {
-                            let dx = px_to_cy(local_x) - px_to_cy(start_mouse_x);
+                            let start_cycle =
+                                (start_mouse_x as f64 / canvas_width as f64) * max_cycle as f64;
+                            let dx = mouse_cycle - start_cycle;
                             state.update(cx, |ts, cx| {
                                 ts.viewport.scroll_cycle = (start_scroll + dx).max(0.0);
                                 ts.viewport.clamp();
                                 cx.notify();
                             });
                         }
-                        MinimapDrag::ResizeLeft { start_mouse_x } => {
-                            let dx = px_to_cy(local_x) - px_to_cy(start_mouse_x);
+                        MinimapDrag::ResizeLeft { .. } => {
+                            // Left edge follows mouse directly.
                             let vp = &state.read(cx).viewport;
-                            let end =
+                            let current_end =
                                 vp.scroll_cycle + vp.view_width as f64 / vp.pixels_per_cycle as f64;
-                            let new_start = (vp.scroll_cycle + dx).max(0.0);
-                            let new_view = (end - new_start).max(10.0);
+                            let new_start = mouse_cycle.clamp(0.0, current_end - 10.0);
+                            let new_view = current_end - new_start;
                             let new_ppc = vp.view_width as f64 / new_view;
                             state.update(cx, |ts, cx| {
                                 ts.viewport.scroll_cycle = new_start;
@@ -433,27 +434,18 @@ impl Render for MinimapView {
                                 ts.viewport.clamp();
                                 cx.notify();
                             });
-                            entity.update(cx, |v, _| {
-                                v.drag_state = Some(MinimapDrag::ResizeLeft {
-                                    start_mouse_x: local_x,
-                                });
-                            });
                         }
-                        MinimapDrag::ResizeRight { start_mouse_x } => {
-                            let dx = px_to_cy(local_x) - px_to_cy(start_mouse_x);
+                        MinimapDrag::ResizeRight { .. } => {
+                            // Right edge follows mouse directly.
                             let vp = &state.read(cx).viewport;
-                            let view = vp.view_width as f64 / vp.pixels_per_cycle as f64;
-                            let new_view = (view + dx).max(10.0);
+                            let new_end =
+                                mouse_cycle.clamp(vp.scroll_cycle + 10.0, max_cycle as f64);
+                            let new_view = new_end - vp.scroll_cycle;
                             let new_ppc = vp.view_width as f64 / new_view;
                             state.update(cx, |ts, cx| {
                                 ts.viewport.pixels_per_cycle = (new_ppc as f32).clamp(0.01, 500.0);
                                 ts.viewport.clamp();
                                 cx.notify();
-                            });
-                            entity.update(cx, |v, _| {
-                                v.drag_state = Some(MinimapDrag::ResizeRight {
-                                    start_mouse_x: local_x,
-                                });
                             });
                         }
                     }
