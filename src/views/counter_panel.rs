@@ -9,12 +9,12 @@ const RATE_WINDOW: u32 = 64;
 /// Sparkline strip height in pixels.
 const SPARKLINE_HEIGHT: f32 = 40.0;
 
-/// Accent color for sparkline fill.
+/// Accent color for sparkline fill — brighter and more opaque for visibility.
 const SPARKLINE_COLOR: Hsla = Hsla {
     h: 210.0 / 360.0,
-    s: 0.65,
-    l: 0.55,
-    a: 0.35,
+    s: 0.55,
+    l: 0.50,
+    a: 0.55,
 };
 
 fn px_val(p: Pixels) -> f32 {
@@ -238,12 +238,13 @@ impl Render for CounterPanel {
                                     data.iter().map(|(_, mx)| *mx).max().unwrap_or(1).max(1);
 
                                 // Paint min-max envelope bars
+                                let bar_w = (width / data.len() as f32).max(1.0).min(3.0);
                                 for (i, (_min_d, max_d)) in data.iter().enumerate() {
                                     let bar_top = *max_d as f32 / global_max as f32;
-                                    if bar_top < 0.01 {
+                                    if bar_top < 0.001 {
                                         continue;
                                     }
-                                    let bar_h = (bar_top * height).max(1.0);
+                                    let bar_h = (bar_top * height).max(2.0);
                                     let y_top = height - bar_h;
 
                                     window.paint_quad(fill(
@@ -252,7 +253,7 @@ impl Render for CounterPanel {
                                                 bounds.origin.x + px(i as f32),
                                                 bounds.origin.y + px(y_top),
                                             ),
-                                            size(px(1.0), px(bar_h)),
+                                            size(px(bar_w), px(bar_h)),
                                         ),
                                         SPARKLINE_COLOR,
                                     ));
