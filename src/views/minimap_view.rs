@@ -248,145 +248,154 @@ impl Render for MinimapView {
                             let width = px_val(bounds.size.width);
                             let height = px_val(bounds.size.height);
 
-                            // 1. Paint trendline from cache (computed in layout closure)
-                            let v = view.read(cx);
-                            if let Some(cache) = &v.trendline_cache {
-                                // Paint dim trendline across full width
-                                paint_trendline_cached(
-                                    &cache.data,
-                                    cache.global_max,
-                                    &bounds,
-                                    width,
-                                    height,
-                                    TRENDLINE_DIM,
-                                    window,
-                                );
+                            // Clip all painting to the canvas bounds.
+                            window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                                // 1. Paint trendline from cache (computed in layout closure)
+                                let v = view.read(cx);
+                                if let Some(cache) = &v.trendline_cache {
+                                    // Paint dim trendline across full width
+                                    paint_trendline_cached(
+                                        &cache.data,
+                                        cache.global_max,
+                                        &bounds,
+                                        width,
+                                        height,
+                                        TRENDLINE_DIM,
+                                        window,
+                                    );
 
-                                // Paint bright trendline clipped to viewport
+                                    // Paint bright trendline clipped to viewport
+                                    let vp = &ts.viewport;
+                                    let (vis_start, vis_end) = vp.visible_cycle_range();
+                                    let vp_left_px =
+                                        (vis_start as f64 / max_cycle as f64) as f32 * width;
+                                    let vp_right_px =
+                                        (vis_end as f64 / max_cycle as f64) as f32 * width;
+                                    let vp_width_px =
+                                        (vp_right_px - vp_left_px).max(MIN_VIEWPORT_PX);
+
+                                    let clip_bounds = Bounds::new(
+                                        point(bounds.origin.x + px(vp_left_px), bounds.origin.y),
+                                        size(px(vp_width_px), px(height)),
+                                    );
+                                    window.with_content_mask(
+                                        Some(ContentMask {
+                                            bounds: clip_bounds,
+                                        }),
+                                        |window| {
+                                            paint_trendline_cached(
+                                                &cache.data,
+                                                cache.global_max,
+                                                &bounds,
+                                                width,
+                                                height,
+                                                TRENDLINE_FILL,
+                                                window,
+                                            );
+                                        },
+                                    );
+                                }
+
+                                // 2. Compute viewport rectangle (strictly clamped to canvas)
                                 let vp = &ts.viewport;
                                 let (vis_start, vis_end) = vp.visible_cycle_range();
-                                let vp_left_px =
-                                    (vis_start as f64 / max_cycle as f64) as f32 * width;
-                                let vp_right_px =
-                                    (vis_end as f64 / max_cycle as f64) as f32 * width;
-                                let vp_width_px = (vp_right_px - vp_left_px).max(MIN_VIEWPORT_PX);
+                                let vp_left = ((vis_start as f64 / max_cycle as f64) as f32
+                                    * width)
+                                    .clamp(0.0, width);
+                                let vp_right = ((vis_end as f64 / max_cycle as f64) as f32 * width)
+                                    .clamp(0.0, width);
+                                let vp_width = (vp_right - vp_left)
+                                    .max(MIN_VIEWPORT_PX)
+                                    .min(width - vp_left); // ensure right edge stays within canvas
 
-                                let clip_bounds = Bounds::new(
-                                    point(bounds.origin.x + px(vp_left_px), bounds.origin.y),
-                                    size(px(vp_width_px), px(height)),
-                                );
-                                window.with_content_mask(
-                                    Some(ContentMask {
-                                        bounds: clip_bounds,
-                                    }),
-                                    |window| {
-                                        paint_trendline_cached(
-                                            &cache.data,
-                                            cache.global_max,
-                                            &bounds,
-                                            width,
-                                            height,
-                                            TRENDLINE_FILL,
-                                            window,
-                                        );
-                                    },
-                                );
-                            }
+                                // 3. Dimmed overlays outside viewport
+                                let dim_color = Hsla {
+                                    h: 0.0,
+                                    s: 0.0,
+                                    l: 0.0,
+                                    a: 0.45,
+                                };
+                                if vp_left > 0.0 {
+                                    window.paint_quad(fill(
+                                        Bounds::new(bounds.origin, size(px(vp_left), px(height))),
+                                        dim_color,
+                                    ));
+                                }
+                                let right_start = vp_left + vp_width;
+                                if right_start < width {
+                                    window.paint_quad(fill(
+                                        Bounds::new(
+                                            point(
+                                                bounds.origin.x + px(right_start),
+                                                bounds.origin.y,
+                                            ),
+                                            size(px(width - right_start), px(height)),
+                                        ),
+                                        dim_color,
+                                    ));
+                                }
 
-                            // 2. Compute viewport rectangle (strictly clamped to canvas)
-                            let vp = &ts.viewport;
-                            let (vis_start, vis_end) = vp.visible_cycle_range();
-                            let vp_left = ((vis_start as f64 / max_cycle as f64) as f32 * width)
-                                .clamp(0.0, width);
-                            let vp_right = ((vis_end as f64 / max_cycle as f64) as f32 * width)
-                                .clamp(0.0, width);
-                            let vp_width = (vp_right - vp_left)
-                                .max(MIN_VIEWPORT_PX)
-                                .min(width - vp_left); // ensure right edge stays within canvas
+                                // 4. Viewport border
+                                window.paint_quad(PaintQuad {
+                                    bounds: Bounds::new(
+                                        point(bounds.origin.x + px(vp_left), bounds.origin.y),
+                                        size(px(vp_width), px(height)),
+                                    ),
+                                    corner_radii: Corners::all(px(2.0)),
+                                    background: gpui::transparent_black().into(),
+                                    border_widths: Edges::all(px(1.0)),
+                                    border_color: Hsla { a: 0.5, ..ACCENT },
+                                    border_style: BorderStyle::default(),
+                                });
 
-                            // 3. Dimmed overlays outside viewport
-                            let dim_color = Hsla {
-                                h: 0.0,
-                                s: 0.0,
-                                l: 0.0,
-                                a: 0.45,
-                            };
-                            if vp_left > 0.0 {
-                                window.paint_quad(fill(
-                                    Bounds::new(bounds.origin, size(px(vp_left), px(height))),
-                                    dim_color,
-                                ));
-                            }
-                            let right_start = vp_left + vp_width;
-                            if right_start < width {
+                                // 5. Edge handles (rounded pills, centered on viewport edges)
+                                let handle_y = bounds.origin.y + px((height - HANDLE_HEIGHT) / 2.0);
+                                let half_hw = HANDLE_WIDTH / 2.0;
+                                let left_center = vp_left.clamp(half_hw, width - half_hw);
+                                let right_edge = vp_left + vp_width;
+                                let right_center =
+                                    right_edge.clamp(left_center + HANDLE_WIDTH, width - half_hw);
+                                let left_hx = left_center - half_hw;
+                                let right_hx = right_center - half_hw;
+                                // Left handle
+                                window.paint_quad(PaintQuad {
+                                    bounds: Bounds::new(
+                                        point(bounds.origin.x + px(left_hx), handle_y),
+                                        size(px(HANDLE_WIDTH), px(HANDLE_HEIGHT)),
+                                    ),
+                                    corner_radii: Corners::all(px(HANDLE_RADIUS)),
+                                    background: ACCENT.into(),
+                                    border_widths: Edges::default(),
+                                    border_color: gpui::transparent_black(),
+                                    border_style: BorderStyle::default(),
+                                });
+                                // Right handle
+                                window.paint_quad(PaintQuad {
+                                    bounds: Bounds::new(
+                                        point(bounds.origin.x + px(right_hx), handle_y),
+                                        size(px(HANDLE_WIDTH), px(HANDLE_HEIGHT)),
+                                    ),
+                                    corner_radii: Corners::all(px(HANDLE_RADIUS)),
+                                    background: ACCENT.into(),
+                                    border_widths: Edges::default(),
+                                    border_color: gpui::transparent_black(),
+                                    border_style: BorderStyle::default(),
+                                });
+
+                                // 6. Cursor marker
+                                let active_cursor =
+                                    &ts.cursor_state.cursors[ts.cursor_state.active_idx];
+                                let cursor_x =
+                                    (active_cursor.cycle / max_cycle as f64) as f32 * width;
+                                let cursor_color = colors::cursor_color(active_cursor.color_idx);
                                 window.paint_quad(fill(
                                     Bounds::new(
-                                        point(bounds.origin.x + px(right_start), bounds.origin.y),
-                                        size(px(width - right_start), px(height)),
+                                        point(bounds.origin.x + px(cursor_x), bounds.origin.y),
+                                        size(px(1.0), px(height)),
                                     ),
-                                    dim_color,
+                                    cursor_color,
                                 ));
-                            }
-
-                            // 4. Viewport border
-                            window.paint_quad(PaintQuad {
-                                bounds: Bounds::new(
-                                    point(bounds.origin.x + px(vp_left), bounds.origin.y),
-                                    size(px(vp_width), px(height)),
-                                ),
-                                corner_radii: Corners::all(px(2.0)),
-                                background: gpui::transparent_black().into(),
-                                border_widths: Edges::all(px(1.0)),
-                                border_color: Hsla { a: 0.5, ..ACCENT },
-                                border_style: BorderStyle::default(),
-                            });
-
-                            // 5. Edge handles (rounded pills, centered on viewport edges)
-                            let handle_y = bounds.origin.y + px((height - HANDLE_HEIGHT) / 2.0);
-                            let half_hw = HANDLE_WIDTH / 2.0;
-                            // Handle center = viewport edge, clamped so handle stays in [0, width].
-                            let left_center = vp_left.clamp(half_hw, width - half_hw);
-                            let right_center = (vp_left + vp_width)
-                                .clamp(left_center + HANDLE_WIDTH, width - half_hw);
-                            let left_hx = left_center - half_hw;
-                            let right_hx = right_center - half_hw;
-                            // Left handle
-                            window.paint_quad(PaintQuad {
-                                bounds: Bounds::new(
-                                    point(bounds.origin.x + px(left_hx), handle_y),
-                                    size(px(HANDLE_WIDTH), px(HANDLE_HEIGHT)),
-                                ),
-                                corner_radii: Corners::all(px(HANDLE_RADIUS)),
-                                background: ACCENT.into(),
-                                border_widths: Edges::default(),
-                                border_color: gpui::transparent_black(),
-                                border_style: BorderStyle::default(),
-                            });
-                            // Right handle
-                            window.paint_quad(PaintQuad {
-                                bounds: Bounds::new(
-                                    point(bounds.origin.x + px(right_hx), handle_y),
-                                    size(px(HANDLE_WIDTH), px(HANDLE_HEIGHT)),
-                                ),
-                                corner_radii: Corners::all(px(HANDLE_RADIUS)),
-                                background: ACCENT.into(),
-                                border_widths: Edges::default(),
-                                border_color: gpui::transparent_black(),
-                                border_style: BorderStyle::default(),
-                            });
-
-                            // 6. Cursor marker
-                            let active_cursor =
-                                &ts.cursor_state.cursors[ts.cursor_state.active_idx];
-                            let cursor_x = (active_cursor.cycle / max_cycle as f64) as f32 * width;
-                            let cursor_color = colors::cursor_color(active_cursor.color_idx);
-                            window.paint_quad(fill(
-                                Bounds::new(
-                                    point(bounds.origin.x + px(cursor_x), bounds.origin.y),
-                                    size(px(1.0), px(height)),
-                                ),
-                                cursor_color,
-                            ));
+                            }); // end with_content_mask
                         }
                     },
                 )
