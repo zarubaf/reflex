@@ -111,7 +111,7 @@ impl MinimapView {
     }
 }
 
-/// Paint the trendline as filled area bars.
+/// Paint the trendline as contiguous filled bars spanning the full width.
 fn paint_trendline(
     data: &[(u64, u64)],
     bounds: &Bounds<Pixels>,
@@ -120,24 +120,27 @@ fn paint_trendline(
     color: Hsla,
     window: &mut Window,
 ) {
+    if data.is_empty() {
+        return;
+    }
     let global_max = data.iter().map(|(_, mx)| *mx).max().unwrap_or(1).max(1);
+    let n = data.len() as f32;
+    // Each bar fills its proportional share of the width — no gaps.
+    let bar_w = (width / n).max(1.0);
 
     for (i, (_min_d, max_d)) in data.iter().enumerate() {
         let bar_top = *max_d as f32 / global_max as f32;
-        // Ensure even tiny values show as a visible dot (minimum 2px)
-        let bar_h = if bar_top < 0.001 {
+        if bar_top < 0.001 {
             continue;
-        } else {
-            (bar_top * height).max(2.0)
-        };
+        }
+        let bar_h = (bar_top * height).max(2.0);
         let y_top = height - bar_h;
+        let x = i as f32 * bar_w;
 
-        // Use 2px wide bars for better visibility
-        let bar_w = (width / data.len() as f32).max(1.0).min(3.0);
         window.paint_quad(fill(
             Bounds::new(
-                point(bounds.origin.x + px(i as f32), bounds.origin.y + px(y_top)),
-                size(px(bar_w), px(bar_h)),
+                point(bounds.origin.x + px(x), bounds.origin.y + px(y_top)),
+                size(px(bar_w.ceil()), px(bar_h)),
             ),
             color,
         ));
@@ -379,10 +382,9 @@ impl Render for MinimapView {
                 let Some(drag) = this.drag_state else {
                     return;
                 };
-                if ev.pressed_button.is_none() {
-                    this.drag_state = None;
-                    return;
-                }
+                // Don't check pressed_button — continue dragging even when
+                // mouse leaves the minimap bounds. Release is handled by on_mouse_up.
+                let _ = ev;
 
                 let local_x = px_val(ev.position.x - this.canvas_origin.x);
                 let ts = this.state.read(cx);

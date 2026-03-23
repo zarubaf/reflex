@@ -237,8 +237,9 @@ impl Render for CounterPanel {
                                 let global_max =
                                     data.iter().map(|(_, mx)| *mx).max().unwrap_or(1).max(1);
 
-                                // Paint min-max envelope bars
-                                let bar_w = (width / data.len() as f32).max(1.0).min(3.0);
+                                // Paint contiguous filled bars spanning the full width
+                                let n = data.len() as f32;
+                                let bar_w = (width / n).max(1.0);
                                 for (i, (_min_d, max_d)) in data.iter().enumerate() {
                                     let bar_top = *max_d as f32 / global_max as f32;
                                     if bar_top < 0.001 {
@@ -246,14 +247,15 @@ impl Render for CounterPanel {
                                     }
                                     let bar_h = (bar_top * height).max(2.0);
                                     let y_top = height - bar_h;
+                                    let x = i as f32 * bar_w;
 
                                     window.paint_quad(fill(
                                         Bounds::new(
                                             point(
-                                                bounds.origin.x + px(i as f32),
+                                                bounds.origin.x + px(x),
                                                 bounds.origin.y + px(y_top),
                                             ),
-                                            size(px(bar_w), px(bar_h)),
+                                            size(px(bar_w.ceil()), px(bar_h)),
                                         ),
                                         SPARKLINE_COLOR,
                                     ));
