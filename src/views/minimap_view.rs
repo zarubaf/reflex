@@ -53,12 +53,8 @@ enum MinimapDrag {
         start_mouse_x: f32,
         start_scroll: f64,
     },
-    ResizeLeft {
-        start_mouse_x: f32,
-    },
-    ResizeRight {
-        start_mouse_x: f32,
-    },
+    ResizeLeft,
+    ResizeRight,
 }
 
 /// Cached trendline data to avoid recomputing on every frame.
@@ -296,14 +292,16 @@ impl Render for MinimapView {
                                 );
                             }
 
-                            // 2. Compute viewport rectangle (clamped to canvas)
+                            // 2. Compute viewport rectangle (strictly clamped to canvas)
                             let vp = &ts.viewport;
                             let (vis_start, vis_end) = vp.visible_cycle_range();
                             let vp_left = ((vis_start as f64 / max_cycle as f64) as f32 * width)
                                 .clamp(0.0, width);
                             let vp_right = ((vis_end as f64 / max_cycle as f64) as f32 * width)
                                 .clamp(0.0, width);
-                            let vp_width = (vp_right - vp_left).max(MIN_VIEWPORT_PX).min(width);
+                            let vp_width = (vp_right - vp_left)
+                                .max(MIN_VIEWPORT_PX)
+                                .min(width - vp_left); // ensure right edge stays within canvas
 
                             // 3. Dimmed overlays outside viewport
                             let dim_color = Hsla {
@@ -329,12 +327,11 @@ impl Render for MinimapView {
                                 ));
                             }
 
-                            // 4. Viewport border (clamped to canvas)
-                            let clamped_vp_w = vp_width.min(width - vp_left);
+                            // 4. Viewport border
                             window.paint_quad(PaintQuad {
                                 bounds: Bounds::new(
                                     point(bounds.origin.x + px(vp_left), bounds.origin.y),
-                                    size(px(clamped_vp_w), px(height)),
+                                    size(px(vp_width), px(height)),
                                 ),
                                 corner_radii: Corners::all(px(2.0)),
                                 background: gpui::transparent_black().into(),
@@ -414,13 +411,9 @@ impl Render for MinimapView {
                         let inside = local_x >= vp_left && local_x <= vp_right;
 
                         if near_left && !near_right {
-                            this.drag_state = Some(MinimapDrag::ResizeLeft {
-                                start_mouse_x: local_x,
-                            });
+                            this.drag_state = Some(MinimapDrag::ResizeLeft);
                         } else if near_right {
-                            this.drag_state = Some(MinimapDrag::ResizeRight {
-                                start_mouse_x: local_x,
-                            });
+                            this.drag_state = Some(MinimapDrag::ResizeRight);
                         } else if inside {
                             this.drag_state = Some(MinimapDrag::Pan {
                                 start_mouse_x: local_x,
@@ -475,7 +468,7 @@ impl Render for MinimapView {
                                 cx.notify();
                             });
                         }
-                        MinimapDrag::ResizeLeft { .. } => {
+                        MinimapDrag::ResizeLeft => {
                             // Left edge follows mouse directly.
                             let vp = &state.read(cx).viewport;
                             let current_end =
@@ -490,7 +483,7 @@ impl Render for MinimapView {
                                 cx.notify();
                             });
                         }
-                        MinimapDrag::ResizeRight { .. } => {
+                        MinimapDrag::ResizeRight => {
                             // Right edge follows mouse directly.
                             let vp = &state.read(cx).viewport;
                             let new_end =
