@@ -341,11 +341,12 @@ impl Render for MinimapView {
                             });
 
                             // 5. Edge handles (rounded pills, inset to stay within canvas)
+                            // Account for rounded corners (MINIMAP_RADIUS) to avoid clipping.
                             let handle_y = bounds.origin.y + px((height - HANDLE_HEIGHT) / 2.0);
-                            // Inset handles inside the viewport rect so they're never clipped.
-                            let left_hx = vp_left.max(0.0);
+                            let inset = MINIMAP_RADIUS;
+                            let left_hx = vp_left.max(inset);
                             let right_hx = (vp_left + vp_width - HANDLE_WIDTH)
-                                .clamp(left_hx + HANDLE_WIDTH, width - HANDLE_WIDTH);
+                                .clamp(left_hx + HANDLE_WIDTH, width - HANDLE_WIDTH - inset);
                             // Left handle
                             window.paint_quad(PaintQuad {
                                 bounds: Bounds::new(
