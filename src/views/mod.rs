@@ -1,3 +1,4 @@
+pub mod counter_panel;
 pub mod goto_bar;
 pub mod help_overlay;
 pub mod info_overlay;

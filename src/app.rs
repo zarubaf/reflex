@@ -15,6 +15,7 @@ use crate::title_bar::render_title_bar;
 use crate::trace::generator::{self, GeneratorConfig};
 use crate::trace::model::PipelineTrace;
 use crate::trace::TraceRegistry;
+use crate::views::counter_panel::CounterPanel;
 use crate::views::goto_bar::GotoBar;
 use crate::views::help_overlay::HelpOverlay;
 use crate::views::info_overlay::InfoOverlay;
@@ -233,6 +234,7 @@ pub struct AppView {
     /// but a Window reference was not available (e.g., from an async spawn).
     needs_rebuild: bool,
     pipeline_panel: Entity<PipelinePanel>,
+    counter_panel: Entity<CounterPanel>,
     retire_queue_tab: Entity<QueuePanel>,
     dispatch_queue_tab: Entity<QueuePanel>,
     issue_queue_tab: Entity<QueuePanel>,
@@ -267,6 +269,7 @@ impl AppView {
         let placeholder = cx.new(|_cx| TraceState::new());
 
         let pipeline_panel = cx.new(|cx| PipelinePanel::new(placeholder.clone(), window, cx));
+        let counter_panel = cx.new(|cx| CounterPanel::new(placeholder.clone(), cx));
         let retire_queue_tab =
             cx.new(|cx| QueuePanel::new(placeholder.clone(), QueueKind::Retire, cx));
         let dispatch_queue_tab =
@@ -278,6 +281,7 @@ impl AppView {
         let queue_placement = DockPlacement::Bottom;
         let dock_area = Self::build_dock_area(
             &pipeline_panel,
+            &counter_panel,
             &retire_queue_tab,
             &dispatch_queue_tab,
             &issue_queue_tab,
@@ -294,6 +298,7 @@ impl AppView {
             next_tab_id: 0,
             needs_rebuild: false,
             pipeline_panel,
+            counter_panel,
             retire_queue_tab,
             dispatch_queue_tab,
             issue_queue_tab,
@@ -359,6 +364,7 @@ impl AppView {
     /// Build a DockArea with the pipeline panel in the center and queue tabs at the given placement.
     fn build_dock_area(
         pipeline_panel: &Entity<PipelinePanel>,
+        counter_panel: &Entity<CounterPanel>,
         retire_tab: &Entity<QueuePanel>,
         dispatch_tab: &Entity<QueuePanel>,
         issue_tab: &Entity<QueuePanel>,
@@ -369,6 +375,7 @@ impl AppView {
         cx: &mut Context<Self>,
     ) -> Entity<DockArea> {
         let pp = pipeline_panel.clone();
+        let cp = counter_panel.clone();
         let rq = retire_tab.clone();
         let dq = dispatch_tab.clone();
         let iq = issue_tab.clone();
@@ -376,7 +383,8 @@ impl AppView {
         cx.new(|cx| {
             let mut dock_area = DockArea::new("main", None, window, cx);
             let weak = cx.entity().downgrade();
-            let center = DockItem::tab(pp, &weak, window, cx);
+            let center_tabs: Vec<Arc<dyn PanelView>> = vec![Arc::new(pp), Arc::new(cp)];
+            let center = DockItem::tabs(center_tabs, &weak, window, cx);
             dock_area.set_center(center, window, cx);
 
             // For left/right docks, stack queue tabs vertically; for bottom, horizontally.
@@ -450,6 +458,7 @@ impl AppView {
     fn rebuild_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(state) = self.active_state().cloned() {
             self.pipeline_panel = cx.new(|cx| PipelinePanel::new(state.clone(), window, cx));
+            self.counter_panel = cx.new(|cx| CounterPanel::new(state.clone(), cx));
             // Preserve queue panel visibility across rebuilds.
             let queue_visible = self
                 .dock_area
@@ -464,6 +473,7 @@ impl AppView {
             self.log_panel = cx.new(|cx| LogPanel::new(self.log_buffer.clone(), cx));
             self.dock_area = Self::build_dock_area(
                 &self.pipeline_panel,
+                &self.counter_panel,
                 &self.retire_queue_tab,
                 &self.dispatch_queue_tab,
                 &self.issue_queue_tab,
@@ -846,6 +856,7 @@ impl AppView {
         self.queue_placement = placement;
         if let Some(state) = self.active_state().cloned() {
             self.pipeline_panel = cx.new(|cx| PipelinePanel::new(state.clone(), window, cx));
+            self.counter_panel = cx.new(|cx| CounterPanel::new(state.clone(), cx));
             self.retire_queue_tab =
                 cx.new(|cx| QueuePanel::new(state.clone(), QueueKind::Retire, cx));
             self.dispatch_queue_tab =
@@ -855,6 +866,7 @@ impl AppView {
             self.log_panel = cx.new(|cx| LogPanel::new(self.log_buffer.clone(), cx));
             self.dock_area = Self::build_dock_area(
                 &self.pipeline_panel,
+                &self.counter_panel,
                 &self.retire_queue_tab,
                 &self.dispatch_queue_tab,
                 &self.issue_queue_tab,

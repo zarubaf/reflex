@@ -88,12 +88,37 @@ pub struct QueueOccupancy {
     pub issue_queues: Vec<(u32, Vec<QueueSlotEntry>)>,
 }
 
+/// Display mode for a performance counter value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CounterDisplayMode {
+    /// Raw cumulative value.
+    Total,
+    /// Delta / window_size (e.g., IPC).
+    Rate,
+    /// Single-cycle change.
+    Delta,
+}
+
+/// A single performance counter time-series.
+#[derive(Debug, Clone)]
+pub struct CounterSeries {
+    /// Display name (scope-qualified if multi-scope trace).
+    pub name: String,
+    /// Cumulative values indexed by cycle (0-based from trace start).
+    /// `values[cycle]` = total count at end of that cycle.
+    pub values: Vec<u64>,
+    /// Default display mode.
+    pub default_mode: CounterDisplayMode,
+}
+
 /// The full pipeline trace — owns all data in SoA layout.
 #[derive(Debug, Clone)]
 pub struct PipelineTrace {
     pub instructions: Vec<InstructionData>,
     pub stages: Vec<StageSpan>,
     pub dependencies: Vec<Dependency>,
+    /// Performance counter time-series parsed from uscope traces.
+    pub counters: Vec<CounterSeries>,
     /// Key-value metadata from the trace source (DUT properties, format info, etc.).
     pub metadata: Vec<(String, String)>,
     /// Clock period in picoseconds (from uscope traces). Enables cycle↔timestamp conversion.
@@ -109,6 +134,7 @@ impl PipelineTrace {
             instructions: Vec::new(),
             stages: Vec::new(),
             dependencies: Vec::new(),
+            counters: Vec::new(),
             metadata: Vec::new(),
             period_ps: None,
             stage_names: Vec::new(),
@@ -175,6 +201,39 @@ impl PipelineTrace {
     /// Look up a stage name index by name, if it exists.
     pub fn stage_name_idx(&self, name: &str) -> Option<StageNameIdx> {
         self.stage_name_map.get(name).copied()
+    }
+
+    /// Get cumulative counter value at a cycle.
+    pub fn counter_value_at(&self, counter_idx: usize, cycle: u32) -> u64 {
+        let series = &self.counters[counter_idx];
+        if series.values.is_empty() {
+            return 0;
+        }
+        let idx = (cycle as usize).min(series.values.len() - 1);
+        series.values[idx]
+    }
+
+    /// Get counter rate over a window ending at the given cycle.
+    pub fn counter_rate_at(&self, counter_idx: usize, cycle: u32, window: u32) -> f64 {
+        let end_val = self.counter_value_at(counter_idx, cycle);
+        let start_cycle = cycle.saturating_sub(window);
+        let start_val = self.counter_value_at(counter_idx, start_cycle);
+        let actual_window = cycle.saturating_sub(start_cycle);
+        if actual_window == 0 {
+            return 0.0;
+        }
+        (end_val.wrapping_sub(start_val)) as f64 / actual_window as f64
+    }
+
+    /// Get single-cycle delta for a counter.
+    pub fn counter_delta_at(&self, counter_idx: usize, cycle: u32) -> u64 {
+        let curr = self.counter_value_at(counter_idx, cycle);
+        let prev = if cycle > 0 {
+            self.counter_value_at(counter_idx, cycle - 1)
+        } else {
+            0
+        };
+        curr.wrapping_sub(prev)
     }
 
     /// Compute queue occupancy at a given cycle.
@@ -348,6 +407,50 @@ mod tests {
         assert_eq!(trace.row_for_id(42), Some(0));
         assert_eq!(trace.row_for_id(43), Some(1));
         assert_eq!(trace.row_for_id(99), None);
+    }
+
+    #[test]
+    fn test_counter_value_at() {
+        let mut trace = PipelineTrace::new();
+        trace.counters.push(CounterSeries {
+            name: "committed_insns".to_string(),
+            // Cycles: 0=0, 1=2, 2=5, 3=5, 4=8
+            values: vec![0, 2, 5, 5, 8],
+            default_mode: CounterDisplayMode::Total,
+        });
+        assert_eq!(trace.counter_value_at(0, 0), 0);
+        assert_eq!(trace.counter_value_at(0, 2), 5);
+        assert_eq!(trace.counter_value_at(0, 4), 8);
+        // Beyond range clamps to last value
+        assert_eq!(trace.counter_value_at(0, 100), 8);
+    }
+
+    #[test]
+    fn test_counter_rate_at() {
+        let mut trace = PipelineTrace::new();
+        trace.counters.push(CounterSeries {
+            name: "committed_insns".to_string(),
+            values: vec![0, 2, 4, 6, 8, 10],
+            default_mode: CounterDisplayMode::Rate,
+        });
+        // Rate over 2-cycle window at cycle 4: (8-4)/2 = 2.0
+        assert!((trace.counter_rate_at(0, 4, 2) - 2.0).abs() < f64::EPSILON);
+        // Rate at cycle 0 with window 2: (0-0)/0 = 0 (edge case)
+        assert!((trace.counter_rate_at(0, 0, 2) - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_counter_delta_at() {
+        let mut trace = PipelineTrace::new();
+        trace.counters.push(CounterSeries {
+            name: "bp_misses".to_string(),
+            values: vec![0, 0, 1, 1, 3],
+            default_mode: CounterDisplayMode::Total,
+        });
+        assert_eq!(trace.counter_delta_at(0, 0), 0);
+        assert_eq!(trace.counter_delta_at(0, 2), 1);
+        assert_eq!(trace.counter_delta_at(0, 3), 0);
+        assert_eq!(trace.counter_delta_at(0, 4), 2);
     }
 
     #[test]
