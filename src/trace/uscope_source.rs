@@ -1,5 +1,6 @@
 use crate::trace::model::{
-    DepKind, Dependency, InstructionData, PipelineTrace, RetireStatus, StageSpan,
+    CounterDisplayMode, CounterSeries, DepKind, Dependency, InstructionData, PipelineTrace,
+    RetireStatus, StageSpan,
 };
 use crate::trace::{TraceError, TraceSource};
 use instruction_decoder::Decoder;
@@ -389,6 +390,43 @@ fn parse_uscope(path: &Path) -> Result<PipelineTrace, TraceError> {
         .map(|name| trace.intern_stage(name))
         .collect();
 
+    // Detect counter storages: 1-slot, dense, single U64 field
+    let schema = reader.schema();
+    let counter_storages: Vec<(u16, String)> = schema
+        .storages
+        .iter()
+        .filter(|s| {
+            s.num_slots == 1
+                && !s.is_sparse()
+                && s.fields.len() == 1
+                && s.fields[0].field_type == FieldType::U64 as u8
+        })
+        .map(|s| {
+            let name = schema.get_string(s.name).unwrap_or("?").to_string();
+            (s.storage_id, name)
+        })
+        .collect();
+
+    // Map storage_id → index into counter_series
+    let counter_storage_map: HashMap<u16, usize> = counter_storages
+        .iter()
+        .enumerate()
+        .map(|(idx, (sid, _))| (*sid, idx))
+        .collect();
+
+    // Initialize counter series
+    let mut counter_series: Vec<CounterSeries> = counter_storages
+        .iter()
+        .map(|(_, name)| CounterSeries {
+            name: name.clone(),
+            values: Vec::new(),
+            default_mode: CounterDisplayMode::Total,
+        })
+        .collect();
+
+    // Track cumulative counter values during replay
+    let mut counter_accum: Vec<u64> = vec![0; counter_storages.len()];
+
     // Entity tracking state
     let mut slot_to_entity: HashMap<u16, u32> = HashMap::new();
     let mut builders: HashMap<u32, InstrBuilder> = HashMap::new();
@@ -403,10 +441,33 @@ fn parse_uscope(path: &Path) -> Result<PipelineTrace, TraceError> {
         for item in items {
             match item {
                 TimedItem::Op(op) => {
+                    let cycle = (op.time_ps / ids.period_ps) as u32;
+
+                    // Handle counter storages (DA_SLOT_ADD on 1-slot dense storages)
+                    if let Some(&counter_idx) = counter_storage_map.get(&op.storage_id) {
+                        if op.action == DA_SLOT_ADD {
+                            counter_accum[counter_idx] =
+                                counter_accum[counter_idx].wrapping_add(op.value);
+                            let series = &mut counter_series[counter_idx];
+                            let val = counter_accum[counter_idx];
+                            // Fill gap cycles with previous value, then set current
+                            let last_val = series.values.last().copied().unwrap_or(0);
+                            while series.values.len() < cycle as usize {
+                                series.values.push(last_val);
+                            }
+                            if (cycle as usize) < series.values.len() {
+                                // Multiple updates in same cycle: overwrite
+                                series.values[cycle as usize] = val;
+                            } else {
+                                series.values.push(val);
+                            }
+                        }
+                        continue;
+                    }
+
                     if op.storage_id != ids.entities_storage_id {
                         continue;
                     }
-                    let cycle = (op.time_ps / ids.period_ps) as u32;
 
                     match op.action {
                         DA_SLOT_SET => {
@@ -554,6 +615,16 @@ fn parse_uscope(path: &Path) -> Result<PipelineTrace, TraceError> {
         }
     }
 
+    // Finalize counter series: fill to max_cycle with last known value
+    let total_cycles = (reader.header().total_time_ps / ids.period_ps) as usize;
+    for (idx, series) in counter_series.iter_mut().enumerate() {
+        let last_val = counter_accum[idx];
+        series
+            .values
+            .resize(total_cycles.max(series.values.len()), last_val);
+    }
+    trace.counters = counter_series;
+
     // Finalize remaining in-flight instructions
     for (_eid, b) in builders.drain() {
         let mut b = b;
@@ -657,5 +728,16 @@ mod tests {
             has_mnemonic,
             "at least some instructions should have mnemonics in disasm"
         );
+
+        // Log counter info for debugging
+        eprintln!("counters found: {}", trace.counters.len());
+        for c in &trace.counters {
+            eprintln!(
+                "  counter '{}': {} samples, last={}",
+                c.name,
+                c.values.len(),
+                c.values.last().copied().unwrap_or(0)
+            );
+        }
     }
 }
