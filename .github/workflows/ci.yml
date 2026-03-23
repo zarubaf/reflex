@@ -14,12 +14,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
         with:
-          repository: zarubaf/uscope
-          path: uscope-checkout
-      - name: Symlink uscope
-        run: ln -s "$GITHUB_WORKSPACE/uscope-checkout" ../uscope
+          submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build
@@ -31,12 +27,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
         with:
-          repository: zarubaf/uscope
-          path: uscope-checkout
-      - name: Symlink uscope
-        run: ln -s "$GITHUB_WORKSPACE/uscope-checkout" ../uscope
+          submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install dependencies
@@ -70,12 +62,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
         with:
-          repository: zarubaf/uscope
-          path: uscope-checkout
-      - name: Symlink uscope
-        run: ln -s "$GITHUB_WORKSPACE/uscope-checkout" ../uscope
+          submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -87,12 +75,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
         with:
-          repository: zarubaf/uscope
-          path: uscope-checkout
-      - name: Symlink uscope
-        run: ln -s "$GITHUB_WORKSPACE/uscope-checkout" ../uscope
+          submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt

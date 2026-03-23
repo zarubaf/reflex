@@ -1,0 +1,3 @@
+[submodule "uscope"]
+	path = uscope
+	url = https://github.com/zarubaf/uscope.git

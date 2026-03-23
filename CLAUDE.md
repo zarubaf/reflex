@@ -5,6 +5,7 @@ CPU pipeline trace visualizer built with GPUI (Zed's UI framework). Displays ins
 ## Build & Run
 
 ```bash
+git clone --recurse-submodules <repo-url>  # or: git submodule update --init --recursive
 cargo build          # debug build
 cargo build --release
 cargo run -- path/to/trace.uscope   # open a trace file
