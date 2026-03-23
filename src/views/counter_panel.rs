@@ -6,6 +6,20 @@ use crate::trace::model::CounterDisplayMode;
 
 /// Default rate computation window in cycles.
 const RATE_WINDOW: u32 = 64;
+/// Sparkline strip height in pixels.
+const SPARKLINE_HEIGHT: f32 = 40.0;
+
+/// Accent color for sparkline fill.
+const SPARKLINE_COLOR: Hsla = Hsla {
+    h: 210.0 / 360.0,
+    s: 0.65,
+    l: 0.55,
+    a: 0.35,
+};
+
+fn px_val(p: Pixels) -> f32 {
+    f32::from(p)
+}
 
 /// A panel displaying performance counter values at the current cursor cycle.
 pub struct CounterPanel {
@@ -124,8 +138,11 @@ impl Render for CounterPanel {
                 );
         }
 
-        // Build counter rows
-        let mut rows: Vec<Stateful<Div>> = Vec::with_capacity(counters.len());
+        // Visible cycle range for sparklines
+        let (vis_start, vis_end) = ts.viewport.visible_cycle_range();
+
+        // Build counter rows with sparklines
+        let mut rows: Vec<AnyElement> = Vec::with_capacity(counters.len() * 2);
         for (idx, counter) in counters.iter().enumerate() {
             let mode = self.effective_mode(idx, counter.default_mode);
 
@@ -147,6 +164,7 @@ impl Render for CounterPanel {
             let mode_label = Self::mode_label(mode);
             let mode_color = Self::mode_color(mode);
 
+            // Counter header row
             rows.push(
                 div()
                     .id(("counter", idx))
@@ -185,7 +203,87 @@ impl Render for CounterPanel {
                             .flex()
                             .justify_end()
                             .child(format!("{}{}", value_str, value_label)),
-                    ),
+                    )
+                    .into_any_element(),
+            );
+
+            // Sparkline strip below the counter row
+            let state = self.state.clone();
+            rows.push(
+                div()
+                    .id(("sparkline", idx))
+                    .w_full()
+                    .h(px(SPARKLINE_HEIGHT))
+                    .mx_2()
+                    .mb_1()
+                    .child(
+                        canvas(move |bounds, _window, _cx| bounds, {
+                            let state = state.clone();
+                            move |bounds, _bounds_data, window, cx| {
+                                let ts = state.read(cx);
+                                let width = px_val(bounds.size.width);
+                                let height = px_val(bounds.size.height);
+                                if width < 2.0 || vis_end <= vis_start {
+                                    return;
+                                }
+
+                                let bucket_count = (width as usize).max(1);
+                                let data = ts.trace.counter_downsample_minmax(
+                                    idx,
+                                    vis_start,
+                                    vis_end,
+                                    bucket_count,
+                                );
+                                let global_max =
+                                    data.iter().map(|(_, mx)| *mx).max().unwrap_or(1).max(1);
+
+                                // Paint min-max envelope bars
+                                for (i, (_min_d, max_d)) in data.iter().enumerate() {
+                                    let bar_top = *max_d as f32 / global_max as f32;
+                                    if bar_top < 0.01 {
+                                        continue;
+                                    }
+                                    let bar_h = (bar_top * height).max(1.0);
+                                    let y_top = height - bar_h;
+
+                                    window.paint_quad(fill(
+                                        Bounds::new(
+                                            point(
+                                                bounds.origin.x + px(i as f32),
+                                                bounds.origin.y + px(y_top),
+                                            ),
+                                            size(px(1.0), px(bar_h)),
+                                        ),
+                                        SPARKLINE_COLOR,
+                                    ));
+                                }
+
+                                // Paint cursor line
+                                let cursor_cycle =
+                                    ts.cursor_state.cursors[ts.cursor_state.active_idx]
+                                        .cycle
+                                        .round() as u32;
+                                if cursor_cycle >= vis_start && cursor_cycle <= vis_end {
+                                    let cursor_frac = (cursor_cycle - vis_start) as f32
+                                        / (vis_end - vis_start) as f32;
+                                    let cursor_x = cursor_frac * width;
+                                    let cursor_color = colors::cursor_color(
+                                        ts.cursor_state.cursors[ts.cursor_state.active_idx]
+                                            .color_idx,
+                                    );
+                                    window.paint_quad(fill(
+                                        Bounds::new(
+                                            point(bounds.origin.x + px(cursor_x), bounds.origin.y),
+                                            size(px(1.0), px(height)),
+                                        ),
+                                        cursor_color,
+                                    ));
+                                }
+                            }
+                        })
+                        .size_full(),
+                    )
+                    .into_any_element(),
             );
         }
 
