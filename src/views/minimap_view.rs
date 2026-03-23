@@ -342,11 +342,13 @@ impl Render for MinimapView {
 
                             // 5. Edge handles (rounded pills, centered on viewport edges)
                             let handle_y = bounds.origin.y + px((height - HANDLE_HEIGHT) / 2.0);
-                            // Center on edge, but keep fully within [0, width - HANDLE_WIDTH].
-                            let left_hx =
-                                (vp_left - HANDLE_WIDTH / 2.0).clamp(0.0, width - HANDLE_WIDTH);
-                            let right_hx = (vp_left + vp_width - HANDLE_WIDTH / 2.0)
-                                .clamp(left_hx + HANDLE_WIDTH, width - HANDLE_WIDTH);
+                            let half_hw = HANDLE_WIDTH / 2.0;
+                            // Handle center = viewport edge, clamped so handle stays in [0, width].
+                            let left_center = vp_left.clamp(half_hw, width - half_hw);
+                            let right_center = (vp_left + vp_width)
+                                .clamp(left_center + HANDLE_WIDTH, width - half_hw);
+                            let left_hx = left_center - half_hw;
+                            let right_hx = right_center - half_hw;
                             // Left handle
                             window.paint_quad(PaintQuad {
                                 bounds: Bounds::new(
