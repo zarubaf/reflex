@@ -227,7 +227,9 @@ impl Render for CounterPanel {
                                     return;
                                 }
 
-                                let bucket_count = (width as usize).max(1);
+                                // Cap buckets at cycle range to avoid sparse bars
+                                let cycle_range = (vis_end - vis_start) as usize;
+                                let bucket_count = (width as usize).min(cycle_range).max(1);
                                 let data = ts.trace.counter_downsample_minmax(
                                     idx,
                                     vis_start,
@@ -239,7 +241,7 @@ impl Render for CounterPanel {
 
                                 // Paint contiguous filled bars spanning the full width
                                 let n = data.len() as f32;
-                                let bar_w = (width / n).max(1.0);
+                                let bar_w = (width / n).ceil().max(1.0);
                                 for (i, (_min_d, max_d)) in data.iter().enumerate() {
                                     let bar_top = *max_d as f32 / global_max as f32;
                                     if bar_top < 0.001 {
@@ -247,7 +249,7 @@ impl Render for CounterPanel {
                                     }
                                     let bar_h = (bar_top * height).max(2.0);
                                     let y_top = height - bar_h;
-                                    let x = i as f32 * bar_w;
+                                    let x = (i as f32 / n * width).floor();
 
                                     window.paint_quad(fill(
                                         Bounds::new(
@@ -255,7 +257,7 @@ impl Render for CounterPanel {
                                                 bounds.origin.x + px(x),
                                                 bounds.origin.y + px(y_top),
                                             ),
-                                            size(px(bar_w.ceil()), px(bar_h)),
+                                            size(px(bar_w), px(bar_h)),
                                         ),
                                         SPARKLINE_COLOR,
                                     ));

@@ -125,8 +125,8 @@ fn paint_trendline(
     }
     let global_max = data.iter().map(|(_, mx)| *mx).max().unwrap_or(1).max(1);
     let n = data.len() as f32;
-    // Each bar fills its proportional share of the width — no gaps.
-    let bar_w = (width / n).max(1.0);
+    // Each bar fills width/n pixels — ceil to avoid sub-pixel gaps.
+    let bar_w = (width / n).ceil().max(1.0);
 
     for (i, (_min_d, max_d)) in data.iter().enumerate() {
         let bar_top = *max_d as f32 / global_max as f32;
@@ -135,12 +135,12 @@ fn paint_trendline(
         }
         let bar_h = (bar_top * height).max(2.0);
         let y_top = height - bar_h;
-        let x = i as f32 * bar_w;
+        let x = (i as f32 / n * width).floor();
 
         window.paint_quad(fill(
             Bounds::new(
                 point(bounds.origin.x + px(x), bounds.origin.y + px(y_top)),
-                size(px(bar_w.ceil()), px(bar_h)),
+                size(px(bar_w), px(bar_h)),
             ),
             color,
         ));
@@ -188,10 +188,10 @@ impl Render for MinimapView {
                             let selected_counter = view.read(cx).selected_counter;
                             if let Some(counter_idx) = selected_counter {
                                 if counter_idx < ts.trace.counters.len() {
-                                    let bucket_count = (width as usize).max(1);
-
-                                    // Get cached data — we must update the cache
-                                    // through the entity since paint closures borrow immutably.
+                                    // Cap buckets at max_cycle to avoid sparse bars
+                                    // when the trace has fewer cycles than pixels.
+                                    let bucket_count =
+                                        (width as usize).min(max_cycle as usize).max(1);
                                     let data = ts.trace.counter_downsample_minmax(
                                         counter_idx,
                                         0,
@@ -336,120 +336,140 @@ impl Render for MinimapView {
                 )
                 .size_full(),
             )
-            // Mouse interactions
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, ev: &MouseDownEvent, _window, cx| {
-                    let ts = this.state.read(cx);
+            // Mouse interactions — use bare closures (not cx.listener) so drag
+            // events continue firing even when the mouse leaves the minimap bounds.
+            .on_mouse_down(MouseButton::Left, {
+                let entity = cx.entity().clone();
+                let state = self.state.clone();
+                move |ev: &MouseDownEvent, _window, cx| {
+                    let ts = state.read(cx);
                     let max_cycle = ts.trace.max_cycle();
                     let vp = &ts.viewport;
                     let (vis_start, vis_end) = vp.visible_cycle_range();
+                    let scroll = vp.scroll_cycle;
+                    let view_w = vp.view_width;
+                    let ppc = vp.pixels_per_cycle;
 
-                    let local_x = px_val(ev.position.x - this.canvas_origin.x);
-                    let vp_left = this.cycle_to_pixel(vis_start as f64, max_cycle);
-                    let vp_right = this.cycle_to_pixel(vis_end as f64, max_cycle);
+                    entity.update(cx, |this, cx| {
+                        let local_x = px_val(ev.position.x - this.canvas_origin.x);
+                        let vp_left = this.cycle_to_pixel(vis_start as f64, max_cycle);
+                        let vp_right = this.cycle_to_pixel(vis_end as f64, max_cycle);
 
-                    let near_left = (local_x - vp_left).abs() < HANDLE_HIT_ZONE;
-                    let near_right = (local_x - vp_right).abs() < HANDLE_HIT_ZONE;
-                    let inside = local_x >= vp_left && local_x <= vp_right;
+                        let near_left = (local_x - vp_left).abs() < HANDLE_HIT_ZONE;
+                        let near_right = (local_x - vp_right).abs() < HANDLE_HIT_ZONE;
+                        let inside = local_x >= vp_left && local_x <= vp_right;
 
-                    if near_left && !near_right {
-                        this.drag_state = Some(MinimapDrag::ResizeLeft {
-                            start_mouse_x: local_x,
-                        });
-                    } else if near_right {
-                        this.drag_state = Some(MinimapDrag::ResizeRight {
-                            start_mouse_x: local_x,
-                        });
-                    } else if inside {
-                        this.drag_state = Some(MinimapDrag::Pan {
-                            start_mouse_x: local_x,
-                            start_scroll: vp.scroll_cycle,
-                        });
-                    } else {
-                        let clicked_cycle = this.pixel_to_cycle(local_x, max_cycle);
-                        let view_cycles = vp.view_width as f64 / vp.pixels_per_cycle as f64;
-                        let new_scroll = clicked_cycle - view_cycles / 2.0;
-                        this.state.update(cx, |ts, cx| {
-                            ts.viewport.scroll_cycle = new_scroll.max(0.0);
-                            ts.viewport.clamp();
-                            cx.notify();
-                        });
+                        if near_left && !near_right {
+                            this.drag_state = Some(MinimapDrag::ResizeLeft {
+                                start_mouse_x: local_x,
+                            });
+                        } else if near_right {
+                            this.drag_state = Some(MinimapDrag::ResizeRight {
+                                start_mouse_x: local_x,
+                            });
+                        } else if inside {
+                            this.drag_state = Some(MinimapDrag::Pan {
+                                start_mouse_x: local_x,
+                                start_scroll: scroll,
+                            });
+                        } else {
+                            // Click outside: jump viewport center to click position.
+                            let clicked_cycle = this.pixel_to_cycle(local_x, max_cycle);
+                            let view_cycles = view_w as f64 / ppc as f64;
+                            let new_scroll = clicked_cycle - view_cycles / 2.0;
+                            state.update(cx, |ts, cx| {
+                                ts.viewport.scroll_cycle = new_scroll.max(0.0);
+                                ts.viewport.clamp();
+                                cx.notify();
+                            });
+                        }
+                    });
+                }
+            })
+            .on_mouse_move({
+                let entity = cx.entity().clone();
+                let state = self.state.clone();
+                move |ev: &MouseMoveEvent, _window, cx| {
+                    let drag = entity.read(cx).drag_state;
+                    let Some(drag) = drag else {
+                        return;
+                    };
+
+                    let (local_x, canvas_width) = {
+                        let v = entity.read(cx);
+                        (px_val(ev.position.x - v.canvas_origin.x), v.canvas_width)
+                    };
+                    let max_cycle = state.read(cx).trace.max_cycle();
+                    if max_cycle == 0 || canvas_width <= 0.0 {
+                        return;
                     }
-                }),
-            )
-            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _window, cx| {
-                let Some(drag) = this.drag_state else {
-                    return;
-                };
-                // Don't check pressed_button — continue dragging even when
-                // mouse leaves the minimap bounds. Release is handled by on_mouse_up.
-                let _ = ev;
 
-                let local_x = px_val(ev.position.x - this.canvas_origin.x);
-                let ts = this.state.read(cx);
-                let max_cycle = ts.trace.max_cycle();
+                    let px_to_cy =
+                        |lpx: f32| -> f64 { (lpx as f64 / canvas_width as f64) * max_cycle as f64 };
 
-                match drag {
-                    MinimapDrag::Pan {
-                        start_mouse_x,
-                        start_scroll,
-                    } => {
-                        let dx_cycles = this.pixel_to_cycle(local_x, max_cycle)
-                            - this.pixel_to_cycle(start_mouse_x, max_cycle);
-                        this.state.update(cx, |ts, cx| {
-                            ts.viewport.scroll_cycle = (start_scroll + dx_cycles).max(0.0);
-                            ts.viewport.clamp();
-                            cx.notify();
-                        });
-                    }
-                    MinimapDrag::ResizeLeft { start_mouse_x } => {
-                        let dx_cycles = this.pixel_to_cycle(local_x, max_cycle)
-                            - this.pixel_to_cycle(start_mouse_x, max_cycle);
-                        let vp = &ts.viewport;
-                        let current_end =
-                            vp.scroll_cycle + vp.view_width as f64 / vp.pixels_per_cycle as f64;
-                        let new_start = (vp.scroll_cycle + dx_cycles).max(0.0);
-                        let new_view_cycles = (current_end - new_start).max(10.0);
-                        let new_ppc = vp.view_width as f64 / new_view_cycles;
-                        this.state.update(cx, |ts, cx| {
-                            ts.viewport.scroll_cycle = new_start;
-                            ts.viewport.pixels_per_cycle = (new_ppc as f32).clamp(0.01, 500.0);
-                            ts.viewport.clamp();
-                            cx.notify();
-                        });
-                        this.drag_state = Some(MinimapDrag::ResizeLeft {
-                            start_mouse_x: local_x,
-                        });
-                    }
-                    MinimapDrag::ResizeRight { start_mouse_x } => {
-                        let dx_cycles = this.pixel_to_cycle(local_x, max_cycle)
-                            - this.pixel_to_cycle(start_mouse_x, max_cycle);
-                        let vp = &ts.viewport;
-                        let view_cycles = vp.view_width as f64 / vp.pixels_per_cycle as f64;
-                        let new_view_cycles = (view_cycles + dx_cycles).max(10.0);
-                        let new_ppc = vp.view_width as f64 / new_view_cycles;
-                        this.state.update(cx, |ts, cx| {
-                            ts.viewport.pixels_per_cycle = (new_ppc as f32).clamp(0.01, 500.0);
-                            ts.viewport.clamp();
-                            cx.notify();
-                        });
-                        this.drag_state = Some(MinimapDrag::ResizeRight {
-                            start_mouse_x: local_x,
-                        });
+                    match drag {
+                        MinimapDrag::Pan {
+                            start_mouse_x,
+                            start_scroll,
+                        } => {
+                            let dx = px_to_cy(local_x) - px_to_cy(start_mouse_x);
+                            state.update(cx, |ts, cx| {
+                                ts.viewport.scroll_cycle = (start_scroll + dx).max(0.0);
+                                ts.viewport.clamp();
+                                cx.notify();
+                            });
+                        }
+                        MinimapDrag::ResizeLeft { start_mouse_x } => {
+                            let dx = px_to_cy(local_x) - px_to_cy(start_mouse_x);
+                            let vp = &state.read(cx).viewport;
+                            let end =
+                                vp.scroll_cycle + vp.view_width as f64 / vp.pixels_per_cycle as f64;
+                            let new_start = (vp.scroll_cycle + dx).max(0.0);
+                            let new_view = (end - new_start).max(10.0);
+                            let new_ppc = vp.view_width as f64 / new_view;
+                            state.update(cx, |ts, cx| {
+                                ts.viewport.scroll_cycle = new_start;
+                                ts.viewport.pixels_per_cycle = (new_ppc as f32).clamp(0.01, 500.0);
+                                ts.viewport.clamp();
+                                cx.notify();
+                            });
+                            entity.update(cx, |v, _| {
+                                v.drag_state = Some(MinimapDrag::ResizeLeft {
+                                    start_mouse_x: local_x,
+                                });
+                            });
+                        }
+                        MinimapDrag::ResizeRight { start_mouse_x } => {
+                            let dx = px_to_cy(local_x) - px_to_cy(start_mouse_x);
+                            let vp = &state.read(cx).viewport;
+                            let view = vp.view_width as f64 / vp.pixels_per_cycle as f64;
+                            let new_view = (view + dx).max(10.0);
+                            let new_ppc = vp.view_width as f64 / new_view;
+                            state.update(cx, |ts, cx| {
+                                ts.viewport.pixels_per_cycle = (new_ppc as f32).clamp(0.01, 500.0);
+                                ts.viewport.clamp();
+                                cx.notify();
+                            });
+                            entity.update(cx, |v, _| {
+                                v.drag_state = Some(MinimapDrag::ResizeRight {
+                                    start_mouse_x: local_x,
+                                });
+                            });
+                        }
                     }
                 }
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _, _, _cx| {
-                    this.drag_state = None;
-                }),
-            )
+            })
+            .on_mouse_up(MouseButton::Left, {
+                let entity = cx.entity().clone();
+                move |_: &MouseUpEvent, _window, cx| {
+                    entity.update(cx, |v, _| {
+                        v.drag_state = None;
+                    });
+                }
+            })
             .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _window, cx| {
                 let local_x = px_val(ev.position.x - this.canvas_origin.x);
-                let ts = this.state.read(cx);
-                let max_cycle = ts.trace.max_cycle();
+                let max_cycle = this.state.read(cx).trace.max_cycle();
                 let focal_cycle = this.pixel_to_cycle(local_x, max_cycle);
 
                 let delta = ev.delta.pixel_delta(px(20.0));
