@@ -166,9 +166,10 @@ impl Render for MinimapView {
             .h(px(MINIMAP_HEIGHT))
             .mx_2()
             .my_1()
+            // Background with rounded corners, but NO overflow_hidden —
+            // handles need to paint at the very edges without being clipped.
             .rounded(px(MINIMAP_RADIUS))
             .bg(colors::BG_SECONDARY)
-            .overflow_hidden()
             .child(
                 canvas(
                     {
