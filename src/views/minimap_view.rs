@@ -340,11 +340,12 @@ impl Render for MinimapView {
                                 border_style: BorderStyle::default(),
                             });
 
-                            // 5. Edge handles (rounded pills, clamped to canvas)
+                            // 5. Edge handles (rounded pills, inset to stay within canvas)
                             let handle_y = bounds.origin.y + px((height - HANDLE_HEIGHT) / 2.0);
-                            let left_hx = (vp_left - HANDLE_WIDTH / 2.0).max(0.0);
-                            let right_hx =
-                                (vp_left + vp_width - HANDLE_WIDTH / 2.0).min(width - HANDLE_WIDTH);
+                            // Inset handles inside the viewport rect so they're never clipped.
+                            let left_hx = vp_left.max(0.0);
+                            let right_hx = (vp_left + vp_width - HANDLE_WIDTH)
+                                .clamp(left_hx + HANDLE_WIDTH, width - HANDLE_WIDTH);
                             // Left handle
                             window.paint_quad(PaintQuad {
                                 bounds: Bounds::new(
