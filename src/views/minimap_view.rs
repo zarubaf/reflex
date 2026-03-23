@@ -61,6 +61,16 @@ enum MinimapDrag {
     },
 }
 
+/// Cached trendline data to avoid recomputing on every frame.
+struct TrendlineCache {
+    counter_idx: usize,
+    max_cycle: u32,
+    bucket_count: usize,
+    /// Pre-computed global max for normalization.
+    global_max: u64,
+    data: Vec<(u64, u64)>,
+}
+
 /// A minimap showing the full trace duration as a trendline strip,
 /// with a draggable viewport rectangle for navigation.
 pub struct MinimapView {
@@ -70,6 +80,8 @@ pub struct MinimapView {
     drag_state: Option<MinimapDrag>,
     canvas_origin: Point<Pixels>,
     canvas_width: f32,
+    /// Cached trendline — recomputed only when counter, trace, or width changes.
+    trendline_cache: Option<TrendlineCache>,
 }
 
 impl MinimapView {
@@ -93,6 +105,7 @@ impl MinimapView {
             drag_state: None,
             canvas_origin: Point::default(),
             canvas_width: 1.0,
+            trendline_cache: None,
         }
     }
 
@@ -112,18 +125,18 @@ impl MinimapView {
 }
 
 /// Paint the trendline as contiguous filled bars spanning the full width.
-fn paint_trendline(
+fn paint_trendline_cached(
     data: &[(u64, u64)],
+    global_max: u64,
     bounds: &Bounds<Pixels>,
     width: f32,
     height: f32,
     color: Hsla,
     window: &mut Window,
 ) {
-    if data.is_empty() {
+    if data.is_empty() || global_max == 0 {
         return;
     }
-    let global_max = data.iter().map(|(_, mx)| *mx).max().unwrap_or(1).max(1);
     let n = data.len() as f32;
     // Each bar fills width/n pixels — ceil to avoid sub-pixel gaps.
     let bar_w = (width / n).ceil().max(1.0);
@@ -164,10 +177,64 @@ impl Render for MinimapView {
                 canvas(
                     {
                         let view = cx.entity().clone();
+                        let state = state.clone();
                         move |bounds, _window, cx| {
+                            let width = px_val(bounds.size.width);
+
+                            // Read trace data and compute cache update outside entity borrow.
+                            let max_cycle = state.read(cx).trace.max_cycle();
+                            let selected_counter = view.read(cx).selected_counter;
+                            let new_cache = if let Some(counter_idx) = selected_counter {
+                                let bucket_count = (width as usize).min(max_cycle as usize).max(1);
+                                let needs_update = {
+                                    let v = view.read(cx);
+                                    match &v.trendline_cache {
+                                        Some(c) => {
+                                            c.counter_idx != counter_idx
+                                                || c.max_cycle != max_cycle
+                                                || c.bucket_count != bucket_count
+                                        }
+                                        None => true,
+                                    }
+                                };
+                                if needs_update {
+                                    let ts = state.read(cx);
+                                    if counter_idx < ts.trace.counters.len() {
+                                        let data = ts.trace.counter_downsample_minmax(
+                                            counter_idx,
+                                            0,
+                                            max_cycle,
+                                            bucket_count,
+                                        );
+                                        let global_max = data
+                                            .iter()
+                                            .map(|(_, mx)| *mx)
+                                            .max()
+                                            .unwrap_or(1)
+                                            .max(1);
+                                        Some(TrendlineCache {
+                                            counter_idx,
+                                            max_cycle,
+                                            bucket_count,
+                                            global_max,
+                                            data,
+                                        })
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+
                             view.update(cx, |v, _cx| {
                                 v.canvas_origin = bounds.origin;
-                                v.canvas_width = px_val(bounds.size.width);
+                                v.canvas_width = width;
+                                if let Some(cache) = new_cache {
+                                    v.trendline_cache = Some(cache);
+                                }
                             });
                             bounds
                         }
@@ -184,61 +251,49 @@ impl Render for MinimapView {
                             let width = px_val(bounds.size.width);
                             let height = px_val(bounds.size.height);
 
-                            // 1. Paint trendline using cached data
-                            let selected_counter = view.read(cx).selected_counter;
-                            if let Some(counter_idx) = selected_counter {
-                                if counter_idx < ts.trace.counters.len() {
-                                    // Cap buckets at max_cycle to avoid sparse bars
-                                    // when the trace has fewer cycles than pixels.
-                                    let bucket_count =
-                                        (width as usize).min(max_cycle as usize).max(1);
-                                    let data = ts.trace.counter_downsample_minmax(
-                                        counter_idx,
-                                        0,
-                                        max_cycle,
-                                        bucket_count,
-                                    );
+                            // 1. Paint trendline from cache (computed in layout closure)
+                            let v = view.read(cx);
+                            if let Some(cache) = &v.trendline_cache {
+                                // Paint dim trendline across full width
+                                paint_trendline_cached(
+                                    &cache.data,
+                                    cache.global_max,
+                                    &bounds,
+                                    width,
+                                    height,
+                                    TRENDLINE_DIM,
+                                    window,
+                                );
 
-                                    // Paint dim trendline across full width first
-                                    paint_trendline(
-                                        &data,
-                                        &bounds,
-                                        width,
-                                        height,
-                                        TRENDLINE_DIM,
-                                        window,
-                                    );
+                                // Paint bright trendline clipped to viewport
+                                let vp = &ts.viewport;
+                                let (vis_start, vis_end) = vp.visible_cycle_range();
+                                let vp_left_px =
+                                    (vis_start as f64 / max_cycle as f64) as f32 * width;
+                                let vp_right_px =
+                                    (vis_end as f64 / max_cycle as f64) as f32 * width;
+                                let vp_width_px = (vp_right_px - vp_left_px).max(MIN_VIEWPORT_PX);
 
-                                    // Then paint bright trendline clipped to viewport
-                                    let vp = &ts.viewport;
-                                    let (vis_start, vis_end) = vp.visible_cycle_range();
-                                    let vp_left_px =
-                                        (vis_start as f64 / max_cycle as f64) as f32 * width;
-                                    let vp_right_px =
-                                        (vis_end as f64 / max_cycle as f64) as f32 * width;
-                                    let vp_width_px =
-                                        (vp_right_px - vp_left_px).max(MIN_VIEWPORT_PX);
-
-                                    let clip_bounds = Bounds::new(
-                                        point(bounds.origin.x + px(vp_left_px), bounds.origin.y),
-                                        size(px(vp_width_px), px(height)),
-                                    );
-                                    window.with_content_mask(
-                                        Some(ContentMask {
-                                            bounds: clip_bounds,
-                                        }),
-                                        |window| {
-                                            paint_trendline(
-                                                &data,
-                                                &bounds,
-                                                width,
-                                                height,
-                                                TRENDLINE_FILL,
-                                                window,
-                                            );
-                                        },
-                                    );
-                                }
+                                let clip_bounds = Bounds::new(
+                                    point(bounds.origin.x + px(vp_left_px), bounds.origin.y),
+                                    size(px(vp_width_px), px(height)),
+                                );
+                                window.with_content_mask(
+                                    Some(ContentMask {
+                                        bounds: clip_bounds,
+                                    }),
+                                    |window| {
+                                        paint_trendline_cached(
+                                            &cache.data,
+                                            cache.global_max,
+                                            &bounds,
+                                            width,
+                                            height,
+                                            TRENDLINE_FILL,
+                                            window,
+                                        );
+                                    },
+                                );
                             }
 
                             // 2. Compute viewport rectangle (clamped to canvas)
