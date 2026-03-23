@@ -236,6 +236,50 @@ impl PipelineTrace {
         curr.wrapping_sub(prev)
     }
 
+    /// Downsample a counter's per-cycle deltas to min-max envelope buckets.
+    ///
+    /// Returns `bucket_count` pairs of `(min_delta, max_delta)` covering
+    /// `[start_cycle, end_cycle)`. Each bucket aggregates the deltas
+    /// (single-cycle changes) within its range. Useful for sparkline rendering
+    /// where many cycles compress into one pixel.
+    pub fn counter_downsample_minmax(
+        &self,
+        counter_idx: usize,
+        start_cycle: u32,
+        end_cycle: u32,
+        bucket_count: usize,
+    ) -> Vec<(u64, u64)> {
+        if bucket_count == 0 || start_cycle >= end_cycle {
+            return Vec::new();
+        }
+        let series = &self.counters[counter_idx];
+        if series.values.is_empty() {
+            return vec![(0, 0); bucket_count];
+        }
+        let range = end_cycle.saturating_sub(start_cycle) as f64;
+        let cycles_per_bucket = range / bucket_count as f64;
+
+        let mut result = Vec::with_capacity(bucket_count);
+        for b in 0..bucket_count {
+            let bucket_start = start_cycle + (b as f64 * cycles_per_bucket) as u32;
+            let bucket_end = start_cycle + ((b + 1) as f64 * cycles_per_bucket) as u32;
+            let bucket_end = bucket_end.min(end_cycle);
+
+            let mut min_delta = u64::MAX;
+            let mut max_delta = 0u64;
+            for cy in bucket_start..bucket_end {
+                let delta = self.counter_delta_at(counter_idx, cy);
+                min_delta = min_delta.min(delta);
+                max_delta = max_delta.max(delta);
+            }
+            if min_delta == u64::MAX {
+                min_delta = 0;
+            }
+            result.push((min_delta, max_delta));
+        }
+        result
+    }
+
     /// Compute queue occupancy at a given cycle.
     ///
     /// `retire_queue_size`: number of slots in the retire queue (e.g. 128).
@@ -451,6 +495,31 @@ mod tests {
         assert_eq!(trace.counter_delta_at(0, 2), 1);
         assert_eq!(trace.counter_delta_at(0, 3), 0);
         assert_eq!(trace.counter_delta_at(0, 4), 2);
+    }
+
+    #[test]
+    fn test_counter_downsample_minmax() {
+        let mut trace = PipelineTrace::new();
+        // Cumulative: 0, 2, 5, 5, 8, 10, 10, 13, 15, 20
+        // Deltas:     0, 2, 3, 0, 3,  2,  0,  3,  2,  5
+        trace.counters.push(CounterSeries {
+            name: "test".to_string(),
+            values: vec![0, 2, 5, 5, 8, 10, 10, 13, 15, 20],
+            default_mode: CounterDisplayMode::Total,
+        });
+
+        // 2 buckets over 10 cycles: bucket 0 = cycles 0..5, bucket 1 = cycles 5..10
+        let result = trace.counter_downsample_minmax(0, 0, 10, 2);
+        assert_eq!(result.len(), 2);
+        // Bucket 0 deltas: 0, 2, 3, 0, 3 → min=0, max=3
+        assert_eq!(result[0], (0, 3));
+        // Bucket 1 deltas: 2, 0, 3, 2, 5 → min=0, max=5
+        assert_eq!(result[1], (0, 5));
+
+        // Edge case: empty range
+        assert_eq!(trace.counter_downsample_minmax(0, 5, 5, 10).len(), 0);
+        // Edge case: zero buckets
+        assert_eq!(trace.counter_downsample_minmax(0, 0, 10, 0).len(), 0);
     }
 
     #[test]
