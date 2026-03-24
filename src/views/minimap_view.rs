@@ -180,7 +180,6 @@ impl Render for MinimapView {
 
         div()
             .id("minimap")
-            .w_full()
             .h(px(MINIMAP_HEIGHT))
             .mx_2()
             .my_1()
