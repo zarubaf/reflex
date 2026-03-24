@@ -8,6 +8,8 @@ use crate::trace::model::CounterDisplayMode;
 const RATE_WINDOW: u32 = 64;
 /// Sparkline strip height in pixels.
 const SPARKLINE_HEIGHT: f32 = 40.0;
+/// Heatmap row height in pixels.
+const HEATMAP_ROW_HEIGHT: f32 = 6.0;
 
 /// Accent color for sparkline fill — brighter and more opaque for visibility.
 const SPARKLINE_COLOR: Hsla = Hsla {
@@ -21,12 +23,23 @@ fn px_val(p: Pixels) -> f32 {
     f32::from(p)
 }
 
+/// Counter panel view mode.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ViewMode {
+    /// Per-counter sparklines with numeric values.
+    Detail,
+    /// Compact heatmap showing all counters at once.
+    Heatmap,
+}
+
 /// A panel displaying performance counter values at the current cursor cycle.
 pub struct CounterPanel {
     state: Entity<TraceState>,
     focus_handle: FocusHandle,
     /// Per-counter display mode overrides (None = use default from schema).
     display_modes: Vec<Option<CounterDisplayMode>>,
+    /// Current view mode (detail sparklines vs heatmap overview).
+    view_mode: ViewMode,
 }
 
 impl CounterPanel {
@@ -43,6 +56,7 @@ impl CounterPanel {
             state,
             focus_handle: cx.focus_handle(),
             display_modes: vec![None; num_counters],
+            view_mode: ViewMode::Detail,
         }
     }
 
@@ -292,6 +306,175 @@ impl Render for CounterPanel {
             );
         }
 
+        // Header with view mode toggle
+        let mode_label = match self.view_mode {
+            ViewMode::Detail => "Detail",
+            ViewMode::Heatmap => "Heatmap",
+        };
+        let header = div()
+            .px_2()
+            .py_1()
+            .flex()
+            .items_center()
+            .border_b_1()
+            .border_color(colors::GRID_LINE)
+            .child(
+                div()
+                    .flex_1()
+                    .text_color(colors::TEXT_DIMMED)
+                    .child(format!(
+                        "Performance Counters ({}) @ cycle {}",
+                        counters.len(),
+                        cursor_cycle
+                    )),
+            )
+            .child(
+                div()
+                    .id("view-mode-toggle")
+                    .px_2()
+                    .rounded(px(3.0))
+                    .cursor_pointer()
+                    .text_color(colors::TEXT_DIMMED)
+                    .hover(|s| s.text_color(colors::TEXT_PRIMARY).bg(colors::GRID_LINE))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.view_mode = match this.view_mode {
+                            ViewMode::Detail => ViewMode::Heatmap,
+                            ViewMode::Heatmap => ViewMode::Detail,
+                        };
+                        cx.notify();
+                    }))
+                    .child(mode_label),
+            );
+
+        // Content: either detail rows or heatmap canvas
+        let content = if self.view_mode == ViewMode::Heatmap {
+            // Heatmap: one canvas covering all counters
+            let state = self.state.clone();
+            let num_counters = counters.len();
+            div().id("counter-heatmap").flex_1().child(
+                canvas(move |bounds, _window, _cx| bounds, {
+                    let state = state.clone();
+                    move |bounds, _bounds_data, window, cx| {
+                        let width = px_val(bounds.size.width);
+                        let height = px_val(bounds.size.height);
+                        if width < 2.0 || num_counters == 0 {
+                            return;
+                        }
+
+                        // Pre-compute all heatmap data while holding the borrow.
+                        let ts = state.read(cx);
+                        let (vis_start, vis_end) = ts.viewport.visible_cycle_range();
+                        if vis_end <= vis_start {
+                            return;
+                        }
+                        let cycle_range = (vis_end - vis_start) as usize;
+                        let bucket_count = (width as usize).min(cycle_range).max(1);
+                        let row_h = (height / num_counters as f32)
+                            .max(2.0)
+                            .min(HEATMAP_ROW_HEIGHT);
+
+                        // Collect per-counter data + local_max + name.
+                        let heatmap_data: Vec<(Vec<(u64, u64)>, u64, String)> = ts
+                            .trace
+                            .counters
+                            .iter()
+                            .enumerate()
+                            .map(|(ci, c)| {
+                                let data = ts.trace.counter_downsample_minmax(
+                                    ci,
+                                    vis_start,
+                                    vis_end,
+                                    bucket_count,
+                                );
+                                let local_max =
+                                    data.iter().map(|(_, mx)| *mx).max().unwrap_or(1).max(1);
+                                (data, local_max, c.name.clone())
+                            })
+                            .collect();
+                        // Drop ts borrow before entering content mask.
+                        drop(ts);
+
+                        window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                            let n_f = bucket_count as f32;
+                            let bar_w = (width / n_f).ceil().max(1.0);
+
+                            for (ci, (data, local_max, _name)) in heatmap_data.iter().enumerate() {
+                                let row_y = ci as f32 * row_h;
+                                for (bi, (_min_d, max_d)) in data.iter().enumerate() {
+                                    let intensity = *max_d as f32 / *local_max as f32;
+                                    if intensity < 0.001 {
+                                        continue;
+                                    }
+                                    let x = (bi as f32 / n_f * width).floor();
+                                    let color = Hsla {
+                                        h: 210.0 / 360.0,
+                                        s: 0.6,
+                                        l: 0.15 + intensity * 0.45,
+                                        a: 0.4 + intensity * 0.6,
+                                    };
+                                    window.paint_quad(fill(
+                                        Bounds::new(
+                                            point(
+                                                bounds.origin.x + px(x),
+                                                bounds.origin.y + px(row_y),
+                                            ),
+                                            size(px(bar_w), px(row_h - 1.0)),
+                                        ),
+                                        color,
+                                    ));
+                                }
+                            }
+
+                            // Counter name labels
+                            if row_h >= 10.0 {
+                                for (ci, (_data, _local_max, name)) in
+                                    heatmap_data.iter().enumerate()
+                                {
+                                    let row_y = ci as f32 * row_h;
+                                    let run = TextRun {
+                                        len: name.len(),
+                                        font: Font {
+                                            family: "Menlo".into(),
+                                            features: Default::default(),
+                                            fallbacks: None,
+                                            weight: FontWeight::NORMAL,
+                                            style: FontStyle::Normal,
+                                        },
+                                        color: colors::TEXT_DIMMED,
+                                        background_color: None,
+                                        underline: None,
+                                        strikethrough: None,
+                                    };
+                                    let line = window.text_system().shape_line(
+                                        name.clone().into(),
+                                        px(9.0),
+                                        &[run],
+                                        None,
+                                    );
+                                    let _ = line.paint(
+                                        point(
+                                            bounds.origin.x + px(4.0),
+                                            bounds.origin.y + px(row_y),
+                                        ),
+                                        px(9.0),
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            }
+                        });
+                    }
+                })
+                .size_full(),
+            )
+        } else {
+            div()
+                .id("counter-scroll")
+                .flex_1()
+                .overflow_y_scroll()
+                .children(rows)
+        };
+
         div()
             .id("counter-panel")
             .size_full()
@@ -301,26 +484,8 @@ impl Render for CounterPanel {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .child(
-                div()
-                    .px_2()
-                    .py_1()
-                    .text_color(colors::TEXT_DIMMED)
-                    .border_b_1()
-                    .border_color(colors::GRID_LINE)
-                    .child(format!(
-                        "Performance Counters ({}) @ cycle {}",
-                        counters.len(),
-                        cursor_cycle
-                    )),
-            )
-            .child(
-                div()
-                    .id("counter-scroll")
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .children(rows),
-            )
+            .child(header)
+            .child(content)
     }
 }
 
