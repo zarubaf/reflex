@@ -32,6 +32,7 @@ pub fn register(cx: &mut App) {
         KeyBinding::new("alt-cmd-1", LayoutBottom, None),
         KeyBinding::new("alt-cmd-2", LayoutLeft, None),
         KeyBinding::new("alt-cmd-3", LayoutRight, None),
+        KeyBinding::new("cmd-shift-o", ToggleOverlay, None),
         KeyBinding::new("alt-cmd-w", WcpConnect, None),
         KeyBinding::new("alt-cmd-shift-w", WcpDisconnect, None),
     ]);

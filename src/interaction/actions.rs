@@ -28,6 +28,7 @@ actions!([
     LayoutBottom,
     LayoutLeft,
     LayoutRight,
+    ToggleOverlay,
     WcpConnect,
     WcpDisconnect,
     Quit,
