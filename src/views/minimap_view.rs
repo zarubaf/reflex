@@ -160,16 +160,34 @@ impl Render for MinimapView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.state.clone();
 
+        // Read viewport state to position handles as div elements.
+        let ts = self.state.read(cx);
+        let max_cycle = ts.trace.max_cycle();
+        let vp = &ts.viewport;
+        let (vis_start, vis_end) = vp.visible_cycle_range();
+        // We don't know canvas width yet (it's determined during layout),
+        // so express handle positions as percentages of the trace.
+        let left_pct = if max_cycle > 0 {
+            vis_start as f32 / max_cycle as f32
+        } else {
+            0.0
+        };
+        let right_pct = if max_cycle > 0 {
+            (vis_end as f32 / max_cycle as f32).min(1.0)
+        } else {
+            1.0
+        };
+
         div()
             .id("minimap")
             .w_full()
             .h(px(MINIMAP_HEIGHT))
             .mx_2()
             .my_1()
-            // Background with rounded corners, but NO overflow_hidden —
-            // handles need to paint at the very edges without being clipped.
             .rounded(px(MINIMAP_RADIUS))
             .bg(colors::BG_SECONDARY)
+            .overflow_hidden()
+            .relative()
             .child(
                 canvas(
                     {
@@ -348,39 +366,7 @@ impl Render for MinimapView {
                                     border_style: BorderStyle::default(),
                                 });
 
-                                // 5. Edge handles (rounded pills, centered on viewport edges)
-                                let handle_y = bounds.origin.y + px((height - HANDLE_HEIGHT) / 2.0);
-                                let half_hw = HANDLE_WIDTH / 2.0;
-                                // Clamp each handle independently to [0, width - HANDLE_WIDTH].
-                                let max_hx = (width - HANDLE_WIDTH).max(0.0);
-                                let left_hx = (vp_left - half_hw).clamp(0.0, max_hx);
-                                let right_hx = (vp_left + vp_width - half_hw).clamp(0.0, max_hx);
-                                // Left handle
-                                window.paint_quad(PaintQuad {
-                                    bounds: Bounds::new(
-                                        point(bounds.origin.x + px(left_hx), handle_y),
-                                        size(px(HANDLE_WIDTH), px(HANDLE_HEIGHT)),
-                                    ),
-                                    corner_radii: Corners::all(px(HANDLE_RADIUS)),
-                                    background: ACCENT.into(),
-                                    border_widths: Edges::default(),
-                                    border_color: gpui::transparent_black(),
-                                    border_style: BorderStyle::default(),
-                                });
-                                // Right handle
-                                window.paint_quad(PaintQuad {
-                                    bounds: Bounds::new(
-                                        point(bounds.origin.x + px(right_hx), handle_y),
-                                        size(px(HANDLE_WIDTH), px(HANDLE_HEIGHT)),
-                                    ),
-                                    corner_radii: Corners::all(px(HANDLE_RADIUS)),
-                                    background: ACCENT.into(),
-                                    border_widths: Edges::default(),
-                                    border_color: gpui::transparent_black(),
-                                    border_style: BorderStyle::default(),
-                                });
-
-                                // 6. Cursor marker
+                                // 5. Cursor marker (handles are rendered as div children)
                                 let active_cursor =
                                     &ts.cursor_state.cursors[ts.cursor_state.active_idx];
                                 let cursor_x =
@@ -398,6 +384,32 @@ impl Render for MinimapView {
                     },
                 )
                 .size_full(),
+            )
+            // Left handle — absolutely positioned, clipped by parent's overflow_hidden.
+            // Use percentage-based left position so it scales with parent width.
+            // Negative margin centers the handle on the viewport edge.
+            .child(
+                div()
+                    .absolute()
+                    .left(relative(left_pct))
+                    .ml(px(-HANDLE_WIDTH / 2.0))
+                    .top(px((MINIMAP_HEIGHT - HANDLE_HEIGHT) / 2.0))
+                    .w(px(HANDLE_WIDTH))
+                    .h(px(HANDLE_HEIGHT))
+                    .rounded(px(HANDLE_RADIUS))
+                    .bg(ACCENT),
+            )
+            // Right handle
+            .child(
+                div()
+                    .absolute()
+                    .left(relative(right_pct))
+                    .ml(px(-HANDLE_WIDTH / 2.0))
+                    .top(px((MINIMAP_HEIGHT - HANDLE_HEIGHT) / 2.0))
+                    .w(px(HANDLE_WIDTH))
+                    .h(px(HANDLE_HEIGHT))
+                    .rounded(px(HANDLE_RADIUS))
+                    .bg(ACCENT),
             )
             // Mouse interactions — use bare closures (not cx.listener) so drag
             // events continue firing even when the mouse leaves the minimap bounds.
