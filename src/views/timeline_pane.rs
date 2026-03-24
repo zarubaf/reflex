@@ -209,13 +209,14 @@ impl Render for TimelinePane {
                         state.update(cx, |ts, _cx| {
                             ts.record_frame();
                         });
-                        let (viewport, selected_row, trace, cursor_state) = {
+                        let (viewport, selected_row, trace, cursor_state, overlay_counter) = {
                             let ts = state.read(cx);
                             (
                                 ts.viewport.clone(),
                                 ts.selected_row,
                                 ts.trace.clone(),
                                 ts.cursor_state.clone(),
+                                ts.overlay_counter,
                             )
                         };
                         paint_timeline(
@@ -224,6 +225,7 @@ impl Render for TimelinePane {
                             &viewport,
                             selected_row,
                             &cursor_state,
+                            overlay_counter,
                             hdr_h,
                             window,
                             cx,
@@ -258,12 +260,16 @@ impl gpui_component::dock::Panel for TimelinePane {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Height of the counter overlay strip in pixels.
+const OVERLAY_HEIGHT: f32 = 30.0;
+
 fn paint_timeline(
     bounds: Bounds<Pixels>,
     trace: &crate::trace::model::PipelineTrace,
     vp: &crate::interaction::viewport::ViewportState,
     selected_row: Option<usize>,
     cursor_state: &CursorState,
+    overlay_counter: Option<usize>,
     hdr_h: f32,
     window: &mut Window,
     cx: &mut App,
@@ -271,12 +277,18 @@ fn paint_timeline(
     let canvas_w = px_val(bounds.size.width);
     let canvas_h = px_val(bounds.size.height);
 
-    // Content area starts below the header.
+    // Overlay height (only if a counter is selected and exists).
+    let overlay_h = match overlay_counter {
+        Some(idx) if idx < trace.counters.len() => OVERLAY_HEIGHT,
+        _ => 0.0,
+    };
+
+    // Content area starts below the header + overlay.
     let content_origin = Point {
         x: bounds.origin.x,
-        y: bounds.origin.y + px(hdr_h),
+        y: bounds.origin.y + px(hdr_h + overlay_h),
     };
-    let content_h = (canvas_h - hdr_h).max(0.0);
+    let content_h = (canvas_h - hdr_h - overlay_h).max(0.0);
 
     window.paint_quad(fill(bounds, colors::BG_PRIMARY));
 
@@ -394,7 +406,79 @@ fn paint_timeline(
         }
     }
 
-    // Content mask: clip everything below to the content area (below header).
+    // ─── Counter overlay strip (between header and pipeline content) ────
+    if let Some(counter_idx) = overlay_counter {
+        if counter_idx < trace.counters.len() {
+            let overlay_origin = Point {
+                x: bounds.origin.x,
+                y: bounds.origin.y + px(hdr_h),
+            };
+            let overlay_bounds = Bounds {
+                origin: overlay_origin,
+                size: size(bounds.size.width, px(overlay_h)),
+            };
+
+            // Subtle background for the overlay strip.
+            window.paint_quad(fill(
+                overlay_bounds,
+                Hsla {
+                    h: 210.0 / 360.0,
+                    s: 0.2,
+                    l: 0.12,
+                    a: 1.0,
+                },
+            ));
+
+            // Bottom separator.
+            window.paint_quad(fill(
+                Bounds {
+                    origin: point(overlay_origin.x, overlay_origin.y + px(overlay_h - 1.0)),
+                    size: size(bounds.size.width, px(1.0)),
+                },
+                colors::GRID_LINE,
+            ));
+
+            // Paint downsampled counter data as filled bars.
+            let (vis_start, vis_end) = vp.visible_cycle_range();
+            if vis_end > vis_start {
+                let cycle_range = (vis_end - vis_start) as usize;
+                let bucket_count = (canvas_w as usize).min(cycle_range).max(1);
+                let data =
+                    trace.counter_downsample_minmax(counter_idx, vis_start, vis_end, bucket_count);
+                let global_max = data.iter().map(|(_, mx)| *mx).max().unwrap_or(1).max(1);
+                let n = data.len() as f32;
+                let bar_w = (canvas_w / n).ceil().max(1.0);
+                let usable_h = overlay_h - 2.0; // leave 1px top/bottom
+
+                let fill_color = Hsla {
+                    h: 210.0 / 360.0,
+                    s: 0.55,
+                    l: 0.50,
+                    a: 0.55,
+                };
+
+                for (i, (_min_d, max_d)) in data.iter().enumerate() {
+                    let bar_top = *max_d as f32 / global_max as f32;
+                    if bar_top < 0.001 {
+                        continue;
+                    }
+                    let bar_h = (bar_top * usable_h).max(1.0);
+                    let y_top = overlay_h - 1.0 - bar_h;
+                    let x = (i as f32 / n * canvas_w).floor();
+
+                    window.paint_quad(fill(
+                        Bounds::new(
+                            point(overlay_origin.x + px(x), overlay_origin.y + px(y_top)),
+                            size(px(bar_w), px(bar_h)),
+                        ),
+                        fill_color,
+                    ));
+                }
+            }
+        }
+    }
+
+    // Content mask: clip everything below to the content area (below header + overlay).
     let content_clip = ContentMask {
         bounds: Bounds {
             origin: content_origin,

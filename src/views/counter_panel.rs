@@ -391,8 +391,7 @@ impl Render for CounterPanel {
                                 (data, local_max, c.name.clone())
                             })
                             .collect();
-                        // Drop ts borrow before entering content mask.
-                        drop(ts);
+                        // ts borrow ends here (heatmap_data owns all needed data).
 
                         window.with_content_mask(Some(ContentMask { bounds }), |window| {
                             let n_f = bucket_count as f32;

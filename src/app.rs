@@ -129,6 +129,8 @@ pub struct TraceState {
     pub tooltip_hover: Option<TooltipHover>,
     /// Multicursor state.
     pub cursor_state: CursorState,
+    /// Counter index to show as overlay on the pipeline timeline. None = no overlay.
+    pub overlay_counter: Option<usize>,
     /// FPS tracking.
     pub frame_times: VecDeque<Instant>,
     pub fps: f64,
@@ -142,6 +144,7 @@ impl TraceState {
             selected_row: None,
             tooltip_hover: None,
             cursor_state: CursorState::new(),
+            overlay_counter: None,
             frame_times: VecDeque::new(),
             fps: 0.0,
         }
@@ -835,6 +838,24 @@ impl AppView {
         });
     }
 
+    fn handle_toggle_overlay(
+        &mut self,
+        _: &ToggleOverlay,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(state) = self.active_state().cloned() {
+            state.update(cx, |ts, cx| {
+                if ts.overlay_counter.is_some() {
+                    ts.overlay_counter = None;
+                } else if !ts.trace.counters.is_empty() {
+                    ts.overlay_counter = Some(0);
+                }
+                cx.notify();
+            });
+        }
+    }
+
     fn handle_toggle_queues(
         &mut self,
         _: &ToggleQueues,
@@ -1132,6 +1153,7 @@ impl Render for AppView {
             .on_action(cx.listener(Self::handle_remove_cursor))
             .on_action(cx.listener(Self::handle_next_cursor))
             .on_action(cx.listener(Self::handle_prev_cursor))
+            .on_action(cx.listener(Self::handle_toggle_overlay))
             .on_action(cx.listener(Self::handle_toggle_queues))
             .on_action(cx.listener(Self::handle_layout_bottom))
             .on_action(cx.listener(Self::handle_layout_left))
