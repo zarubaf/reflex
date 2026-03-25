@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use gpui::*;
 
 use crate::app::{CursorState, TraceState};
@@ -261,7 +263,7 @@ impl Render for TimelinePane {
                             (
                                 ts.viewport.clone(),
                                 ts.selected_row,
-                                ts.trace.clone(),
+                                Arc::clone(&ts.trace),
                                 ts.cursor_state.clone(),
                                 ts.overlay_counter,
                             )

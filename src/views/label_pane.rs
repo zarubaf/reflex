@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use gpui::*;
 
 use crate::app::{TooltipHover, TraceState};
@@ -143,7 +145,7 @@ impl Render for LabelPane {
                     move |bounds, _bounds_data, window, cx| {
                         let (viewport, selected_row, trace) = {
                             let ts = state.read(cx);
-                            (ts.viewport.clone(), ts.selected_row, ts.trace.clone())
+                            (ts.viewport.clone(), ts.selected_row, Arc::clone(&ts.trace))
                         };
                         paint_labels(bounds, &trace, &viewport, selected_row, hdr_h, window, cx);
                     },

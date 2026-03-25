@@ -14,7 +14,6 @@ use crate::theme::colors;
 use crate::title_bar::render_title_bar;
 use crate::trace::generator::{self, GeneratorConfig};
 use crate::trace::model::PipelineTrace;
-use crate::trace::TraceRegistry;
 use crate::views::buffer_panel::BufferPanel;
 use crate::views::counter_panel::CounterPanel;
 use crate::views::goto_bar::GotoBar;
@@ -189,7 +188,7 @@ impl CursorState {
 
 /// Shared application state — single entity observed by all panels.
 pub struct TraceState {
-    pub trace: PipelineTrace,
+    pub trace: Arc<PipelineTrace>,
     pub viewport: ViewportState,
     pub selected_row: Option<usize>,
     /// Active tooltip hover info, if any.
@@ -209,7 +208,7 @@ pub struct TraceState {
 impl TraceState {
     pub fn new() -> Self {
         Self {
-            trace: PipelineTrace::new(),
+            trace: Arc::new(PipelineTrace::new()),
             viewport: ViewportState::new(),
             selected_row: None,
             tooltip_hover: None,
@@ -230,7 +229,7 @@ impl TraceState {
         self.viewport.max_cycle = trace.max_cycle();
         self.viewport.max_row = trace.row_count();
         self.viewport.clamp();
-        self.trace = trace;
+        self.trace = Arc::new(trace);
     }
 
     /// Record a frame and update FPS.
@@ -579,8 +578,7 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let registry = TraceRegistry::new();
-        match registry.load_file(path) {
+        match crate::trace::uscope_source::parse_uscope(path) {
             Ok(trace) => {
                 let state = cx.new(|_cx| TraceState::new());
                 state.update(cx, |ts, _cx| ts.load_trace(trace));
@@ -790,8 +788,7 @@ impl AppView {
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = receiver.await {
                 if let Some(path) = paths.first() {
-                    let registry = TraceRegistry::new();
-                    match registry.load_file(path) {
+                    match crate::trace::uscope_source::parse_uscope(path) {
                         Ok(trace) => {
                             let path_str = path.to_string_lossy().into_owned();
                             let _ = cx.update(|cx| {
@@ -832,8 +829,7 @@ impl AppView {
         }
         let file_path = self.tabs[self.active_tab].file_path.clone();
         let trace = if let Some(ref path) = file_path {
-            let registry = TraceRegistry::new();
-            match registry.load_file(std::path::Path::new(path)) {
+            match crate::trace::uscope_source::parse_uscope(std::path::Path::new(path)) {
                 Ok(trace) => trace,
                 Err(e) => {
                     eprintln!("Error reloading trace: {}", e);
