@@ -157,6 +157,9 @@ pub struct PipelineTrace {
     pub counters: Vec<CounterSeries>,
     /// Buffer storages detected from uscope schema (SF_BUFFER flag).
     pub buffers: Vec<BufferInfo>,
+    /// Total instruction count in the trace (exact, from file metadata or counting).
+    /// May differ from `instructions.len()` during lazy loading.
+    pub total_instruction_count: usize,
     /// Key-value metadata from the trace source (DUT properties, format info, etc.).
     pub metadata: Vec<(String, String)>,
     /// Clock period in picoseconds (from uscope traces). Enables cycle↔timestamp conversion.
@@ -177,6 +180,7 @@ impl PipelineTrace {
             dependencies: Vec::new(),
             counters: Vec::new(),
             buffers: Vec::new(),
+            total_instruction_count: 0,
             metadata: Vec::new(),
             period_ps: None,
             max_cycle_override: None,
