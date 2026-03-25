@@ -258,8 +258,26 @@ impl Render for TimelinePane {
                         state.update(cx, |ts, _cx| {
                             ts.record_frame();
                             // Lazy segment loading: ensure visible segments are loaded.
-                            let (start, end) = ts.viewport.visible_cycle_range();
-                            ts.ensure_segments_loaded(start, end);
+                            // Use BOTH the visible cycle range AND the cycles corresponding
+                            // to visible rows — so vertical scrolling also triggers loading.
+                            let (cycle_start, cycle_end) = ts.viewport.visible_cycle_range();
+                            let (row_start, row_end) = ts.viewport.visible_row_range();
+
+                            // Expand the cycle range to include the cycles of visible rows.
+                            let mut load_start = cycle_start;
+                            let mut load_end = cycle_end;
+                            if !ts.trace.instructions.is_empty() {
+                                let last_row = row_end.min(ts.trace.row_count().saturating_sub(1));
+                                if row_start < ts.trace.row_count() {
+                                    load_start = load_start
+                                        .min(ts.trace.instructions[row_start].first_cycle);
+                                }
+                                if last_row < ts.trace.row_count() {
+                                    load_end =
+                                        load_end.max(ts.trace.instructions[last_row].last_cycle);
+                                }
+                            }
+                            ts.ensure_segments_loaded(load_start, load_end);
                         });
                         let (viewport, selected_row, trace, cursor_state, overlay_counter) = {
                             let ts = state.read(cx);
