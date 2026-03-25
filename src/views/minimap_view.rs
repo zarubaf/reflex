@@ -70,11 +70,19 @@ struct TrendlineCache {
 
 /// A minimap showing the full trace duration as a trendline strip,
 /// with a draggable viewport rectangle for navigation.
+/// Click detection threshold — if mouse moves less than this during
+/// press+release, it's a click (not a drag).
+const CLICK_THRESHOLD: f32 = 4.0;
+
 pub struct MinimapView {
     state: Entity<TraceState>,
     focus_handle: FocusHandle,
     selected_counter: Option<usize>,
     drag_state: Option<MinimapDrag>,
+    /// Mouse-down position for click vs drag detection.
+    click_start: Option<f32>,
+    /// Whether the mouse moved enough to be considered a drag.
+    did_drag: bool,
     canvas_origin: Point<Pixels>,
     canvas_width: f32,
     /// Cached trendline — recomputed only when counter, trace, or width changes.
@@ -100,6 +108,8 @@ impl MinimapView {
             focus_handle: cx.focus_handle(),
             selected_counter: selected,
             drag_state: None,
+            click_start: None,
+            did_drag: false,
             canvas_origin: Point::default(),
             canvas_width: 1.0,
             trendline_cache: None,
@@ -442,7 +452,7 @@ impl Render for MinimapView {
                     let (cr_start, cr_end) = ts.effective_counter_range();
                     let cr_start_f = cr_start as f64;
 
-                    entity.update(cx, |this, cx| {
+                    entity.update(cx, |this, _cx| {
                         let local_x = px_val(ev.position.x - this.canvas_origin.x);
                         let cr_left = this.cycle_to_pixel(cr_start as f64, max_cycle);
                         let cr_right = this.cycle_to_pixel(cr_end as f64, max_cycle);
@@ -451,33 +461,23 @@ impl Render for MinimapView {
                         let near_right = (local_x - cr_right).abs() < HANDLE_HIT_ZONE;
                         let inside = local_x >= cr_left && local_x <= cr_right;
 
+                        // Record click position for click-vs-drag detection.
+                        this.click_start = Some(local_x);
+                        this.did_drag = false;
+
                         if near_left && !near_right {
                             this.drag_state = Some(MinimapDrag::ResizeLeft);
                         } else if near_right {
                             this.drag_state = Some(MinimapDrag::ResizeRight);
                         } else if inside {
-                            // Pan counter range AND jump pipeline viewport.
                             this.drag_state = Some(MinimapDrag::Pan {
                                 start_mouse_x: local_x,
                                 start_scroll: cr_start_f,
                                 range_width: cr_end as f64 - cr_start_f,
                             });
                         }
-
-                        // Always jump pipeline viewport to clicked position
-                        // (regardless of whether inside or outside counter range).
-                        if !near_left && !near_right {
-                            let clicked_cycle = this.pixel_to_cycle(local_x, max_cycle);
-                            let ts = state.read(cx);
-                            let view_cycles =
-                                ts.viewport.view_width as f64 / ts.viewport.pixels_per_cycle as f64;
-                            let new_scroll = clicked_cycle - view_cycles / 2.0;
-                            state.update(cx, |ts, cx| {
-                                ts.viewport.scroll_cycle = new_scroll.max(0.0);
-                                ts.viewport.clamp();
-                                cx.notify();
-                            });
-                        }
+                        // Don't jump pipeline here — wait for mouse_up to distinguish
+                        // click from drag.
                     });
                 }
             })
@@ -493,7 +493,10 @@ impl Render for MinimapView {
                     // If the mouse button was released outside the minimap,
                     // on_mouse_up never fired. Detect and clear stale drag.
                     if ev.pressed_button.is_none() {
-                        entity.update(cx, |v, _| v.drag_state = None);
+                        entity.update(cx, |v, _| {
+                            v.drag_state = None;
+                            v.click_start = None;
+                        });
                         return;
                     }
 
@@ -501,6 +504,17 @@ impl Render for MinimapView {
                         let v = entity.read(cx);
                         (px_val(ev.position.x - v.canvas_origin.x), v.canvas_width)
                     };
+
+                    // Mark as drag if mouse moved beyond threshold.
+                    {
+                        let v = entity.read(cx);
+                        if let Some(start) = v.click_start {
+                            if (local_x - start).abs() > CLICK_THRESHOLD {
+                                entity.update(cx, |v, _| v.did_drag = true);
+                            }
+                        }
+                    }
+
                     let ts = state.read(cx);
                     let max_cycle = ts.trace.max_cycle();
                     if max_cycle == 0 || canvas_width <= 0.0 {
@@ -549,9 +563,44 @@ impl Render for MinimapView {
             })
             .on_mouse_up(MouseButton::Left, {
                 let entity = cx.entity().clone();
-                move |_: &MouseUpEvent, _window, cx| {
+                let state = self.state.clone();
+                move |ev: &MouseUpEvent, _window, cx| {
+                    let (did_drag, canvas_origin, canvas_width) = {
+                        let v = entity.read(cx);
+                        (v.did_drag, v.canvas_origin, v.canvas_width)
+                    };
+
+                    // If it was a click (not a drag), jump pipeline viewport
+                    // and set cursor to the clicked position.
+                    if !did_drag && canvas_width > 0.0 {
+                        let local_x = px_val(ev.position.x - canvas_origin.x);
+                        let ts = state.read(cx);
+                        let max_cycle = ts.trace.max_cycle();
+                        if max_cycle > 0 {
+                            let clicked_cycle =
+                                (local_x as f64 / canvas_width as f64) * max_cycle as f64;
+                            let clicked_cycle = clicked_cycle.clamp(0.0, max_cycle as f64);
+                            let view_cycles =
+                                ts.viewport.view_width as f64 / ts.viewport.pixels_per_cycle as f64;
+                            let new_scroll = clicked_cycle - view_cycles / 2.0;
+                            state.update(cx, |ts, cx| {
+                                // Center pipeline viewport.
+                                ts.viewport.scroll_cycle = new_scroll.max(0.0);
+                                ts.viewport.clamp();
+                                // Set cursor to clicked position.
+                                let active = ts.cursor_state.active_idx;
+                                if active < ts.cursor_state.cursors.len() {
+                                    ts.cursor_state.cursors[active].cycle = clicked_cycle;
+                                }
+                                cx.notify();
+                            });
+                        }
+                    }
+
                     entity.update(cx, |v, _| {
                         v.drag_state = None;
+                        v.click_start = None;
+                        v.did_drag = false;
                     });
                 }
             })
