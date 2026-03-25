@@ -277,24 +277,14 @@ impl Render for TimelinePane {
                                     load_end =
                                         load_end.max(ts.trace.instructions[last_row].last_cycle);
                                 }
-                                // If scrolled past loaded rows, estimate the target cycle
-                                // from the global instruction-to-cycle ratio.
-                                if row_end > row_count {
-                                    let total_instrs = ts.trace.total_instruction_count.max(1);
-                                    let max_cycle = ts.viewport.max_cycle;
-                                    // Linearly estimate: row R corresponds to cycle
-                                    // R / total_instructions * max_cycle.
-                                    let target_cycle = (row_end as f64 / total_instrs as f64
-                                        * max_cycle as f64)
-                                        as u32;
-                                    load_end = load_end.max(target_cycle).min(max_cycle);
-                                    // Also estimate load_start for the visible start row.
-                                    if row_start > row_count {
-                                        let start_cycle = (row_start as f64 / total_instrs as f64
-                                            * max_cycle as f64)
-                                            as u32;
-                                        load_start = load_start.min(start_cycle);
-                                    }
+                                // Use the global instruction index for exact row-to-cycle
+                                // mapping when scrolled past loaded rows.
+                                let idx = &ts.trace.instruction_index;
+                                if !idx.is_empty() {
+                                    let rs = row_start.min(idx.len().saturating_sub(1));
+                                    let re = row_end.min(idx.len().saturating_sub(1));
+                                    load_start = load_start.min(idx[rs].0);
+                                    load_end = load_end.max(idx[re].0);
                                 }
                             }
                             ts.ensure_segments_loaded(load_start, load_end);

@@ -340,8 +340,8 @@ impl TraceState {
         uscope_ctx: crate::trace::uscope_source::UscopeContext,
     ) {
         self.viewport.max_cycle = trace.max_cycle();
-        // Use total instruction count for max_row so the scrollbar
-        // represents the full trace, not just loaded instructions.
+        // max_row = total instructions. The global instruction_index provides
+        // row-to-cycle mapping so vertical scroll covers the full trace.
         self.viewport.max_row = trace.total_instruction_count;
         self.viewport.clamp();
         let period_ps = trace.period_ps.unwrap_or(1000);
