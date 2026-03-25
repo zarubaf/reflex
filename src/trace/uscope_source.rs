@@ -2,40 +2,13 @@ use crate::trace::model::{
     CounterDisplayMode, CounterSeries, DepKind, Dependency, InstructionData, PipelineTrace,
     RetireStatus, StageSpan,
 };
-use crate::trace::{TraceError, TraceSource};
+use crate::trace::TraceError;
 use instruction_decoder::Decoder;
 use std::collections::HashMap;
-use std::io::Read;
 use std::path::Path;
 use uscope::reader::Reader;
 use uscope::state::TimedItem;
 use uscope::types::*;
-
-pub struct UscopeSource;
-
-impl TraceSource for UscopeSource {
-    fn format_name(&self) -> &str {
-        "µScope"
-    }
-
-    fn file_extensions(&self) -> &[&str] {
-        &["uscope"]
-    }
-
-    fn detect(&self, first_bytes: &[u8]) -> bool {
-        first_bytes.len() >= 4 && first_bytes[..4] == MAGIC
-    }
-
-    fn load(&self, _reader: &mut dyn Read) -> Result<PipelineTrace, TraceError> {
-        Err(TraceError::UnsupportedFormat(
-            "uscope format requires file path for seeking; use load_file()".into(),
-        ))
-    }
-
-    fn load_file(&self, path: &Path) -> Result<PipelineTrace, TraceError> {
-        parse_uscope(path)
-    }
-}
 
 /// Resolved CPU protocol IDs from the schema.
 struct CpuProtocolIds {
@@ -368,7 +341,7 @@ fn populate_metadata(
     }
 }
 
-fn parse_uscope(path: &Path) -> Result<PipelineTrace, TraceError> {
+pub fn parse_uscope(path: &Path) -> Result<PipelineTrace, TraceError> {
     let path_str = path
         .to_str()
         .ok_or_else(|| TraceError::UnsupportedFormat("invalid path encoding".into()))?;
@@ -709,22 +682,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn detect_uscope_magic() {
-        let source = UscopeSource;
-        assert!(source.detect(&MAGIC));
-        assert!(source.detect(&[0x75, 0x53, 0x43, 0x50, 0x00, 0x01]));
-        assert!(!source.detect(&[0x00, 0x00, 0x00, 0x00]));
-        assert!(!source.detect(&[0x75, 0x53])); // too short
-    }
-
-    #[test]
-    fn load_stream_returns_error() {
-        let source = UscopeSource;
-        let mut data: &[u8] = &[];
-        assert!(source.load(&mut data).is_err());
-    }
-
-    #[test]
     fn test_is_disasm_line() {
         assert!(is_disasm_line("00001000: jal zero, 0x10", 0x00001000));
         assert!(is_disasm_line("0x80000000 addi x1, x0, 1", 0x80000000));
@@ -739,8 +696,7 @@ mod tests {
         if !path.exists() {
             return; // skip if test data not available
         }
-        let source = UscopeSource;
-        let trace = source.load_file(path).unwrap();
+        let trace = parse_uscope(path).unwrap();
         assert!(trace.row_count() > 0, "should have instructions");
 
         // Instruction 0 should have disasm with mnemonic, not just hex address
