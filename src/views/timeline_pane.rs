@@ -277,18 +277,24 @@ impl Render for TimelinePane {
                                     load_end =
                                         load_end.max(ts.trace.instructions[last_row].last_cycle);
                                 }
-                                // If scrolled past loaded rows, extrapolate cycle range.
-                                if row_end > row_count && row_count > 1 {
-                                    let last_instr = &ts.trace.instructions[row_count - 1];
-                                    let extra_rows = row_end - row_count;
-                                    // Estimate cycles per row from loaded data.
-                                    let avg_cycles_per_row =
-                                        last_instr.last_cycle as f64 / row_count as f64;
-                                    let extra_cycles =
-                                        (extra_rows as f64 * avg_cycles_per_row) as u32;
-                                    load_end = load_end
-                                        .max(last_instr.last_cycle.saturating_add(extra_cycles))
-                                        .min(ts.viewport.max_cycle);
+                                // If scrolled past loaded rows, estimate the target cycle
+                                // from the global instruction-to-cycle ratio.
+                                if row_end > row_count {
+                                    let total_instrs = ts.trace.total_instruction_count.max(1);
+                                    let max_cycle = ts.viewport.max_cycle;
+                                    // Linearly estimate: row R corresponds to cycle
+                                    // R / total_instructions * max_cycle.
+                                    let target_cycle = (row_end as f64 / total_instrs as f64
+                                        * max_cycle as f64)
+                                        as u32;
+                                    load_end = load_end.max(target_cycle).min(max_cycle);
+                                    // Also estimate load_start for the visible start row.
+                                    if row_start > row_count {
+                                        let start_cycle = (row_start as f64 / total_instrs as f64
+                                            * max_cycle as f64)
+                                            as u32;
+                                        load_start = load_start.min(start_cycle);
+                                    }
                                 }
                             }
                             ts.ensure_segments_loaded(load_start, load_end);
