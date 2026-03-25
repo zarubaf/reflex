@@ -32,6 +32,9 @@ No test suite yet. Verify changes by building and visually testing with a trace 
 - `src/views/timeline_pane.rs` - Canvas-based pipeline stage rendering, custom scroll/zoom via `on_scroll_wheel`
 - `src/views/label_pane.rs` - Row labels (addresses + disassembly), synced scroll with timeline
 - `src/views/queue_panel.rs` - `QueuePanel` with `QueueKind` enum (Retire/Dispatch/Issue), one entity per queue type
+- `src/views/counter_panel.rs` - Performance counter display (detail sparklines + heatmap overview modes)
+- `src/views/minimap_view.rs` - Full-trace minimap with counter trendline, draggable range handles, pipeline indicator
+- `src/config.rs` - TOML config file parsing for counter presets
 - `src/interaction/actions.rs` - All GPUI actions (keybindable commands)
 - `src/interaction/keybindings.rs` - Key binding registration
 - `src/theme/` - Dark color constants (`colors::BG_PRIMARY`, `colors::TEXT_PRIMARY`, etc.)
@@ -39,7 +42,7 @@ No test suite yet. Verify changes by building and visually testing with a trace 
 ### DockArea Integration (gpui-component)
 
 The layout uses `gpui_component::dock::DockArea`:
-- **Center**: `DockItem::tab(pipeline_panel)` - the main pipeline viewer
+- **Center**: `DockItem::tabs([pipeline_panel, counter_panel])` - pipeline viewer + counter panel as tabs
 - **Bottom/Left/Right dock**: `DockItem::h_split` or `v_split` of three `DockItem::tab` queue panels
 - Layout presets switchable via `Alt+Cmd+1/2/3` (bottom/left/right)
 
