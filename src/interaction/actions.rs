@@ -28,6 +28,8 @@ actions!([
     LayoutBottom,
     LayoutLeft,
     LayoutRight,
+    CursorUndo,
+    CursorRedo,
     ToggleOverlay,
     WcpConnect,
     WcpDisconnect,

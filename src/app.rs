@@ -66,12 +66,19 @@ pub struct Cursor {
     pub color_idx: usize,
 }
 
+/// Maximum cursor history entries.
+const CURSOR_HISTORY_MAX: usize = 100;
+
 /// State for multicursor support.
 #[derive(Clone)]
 pub struct CursorState {
     pub cursors: Vec<Cursor>,
     pub active_idx: usize,
     next_color: usize,
+    /// Cursor position history for undo (past positions).
+    history_back: Vec<f64>,
+    /// Cursor position history for redo (undone positions).
+    history_forward: Vec<f64>,
 }
 
 impl CursorState {
@@ -83,6 +90,47 @@ impl CursorState {
             }],
             active_idx: 0,
             next_color: 1,
+            history_back: Vec::new(),
+            history_forward: Vec::new(),
+        }
+    }
+
+    /// Move the active cursor to a new cycle, recording history for undo.
+    pub fn move_cursor(&mut self, cycle: f64) {
+        if let Some(cursor) = self.cursors.get(self.active_idx) {
+            // Don't record if position hasn't changed significantly.
+            if (cursor.cycle - cycle).abs() < 0.5 {
+                return;
+            }
+            self.history_back.push(cursor.cycle);
+            if self.history_back.len() > CURSOR_HISTORY_MAX {
+                self.history_back.remove(0);
+            }
+            // Clear forward history on new movement.
+            self.history_forward.clear();
+        }
+        if let Some(cursor) = self.cursors.get_mut(self.active_idx) {
+            cursor.cycle = cycle;
+        }
+    }
+
+    /// Undo: restore previous cursor position.
+    pub fn undo(&mut self) {
+        if let Some(prev_cycle) = self.history_back.pop() {
+            if let Some(cursor) = self.cursors.get_mut(self.active_idx) {
+                self.history_forward.push(cursor.cycle);
+                cursor.cycle = prev_cycle;
+            }
+        }
+    }
+
+    /// Redo: restore undone cursor position.
+    pub fn redo(&mut self) {
+        if let Some(next_cycle) = self.history_forward.pop() {
+            if let Some(cursor) = self.cursors.get_mut(self.active_idx) {
+                self.history_back.push(cursor.cycle);
+                cursor.cycle = next_cycle;
+            }
         }
     }
 
@@ -847,6 +895,24 @@ impl AppView {
         });
     }
 
+    fn handle_cursor_undo(&mut self, _: &CursorUndo, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(state) = self.active_state().cloned() {
+            state.update(cx, |ts, cx| {
+                ts.cursor_state.undo();
+                cx.notify();
+            });
+        }
+    }
+
+    fn handle_cursor_redo(&mut self, _: &CursorRedo, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(state) = self.active_state().cloned() {
+            state.update(cx, |ts, cx| {
+                ts.cursor_state.redo();
+                cx.notify();
+            });
+        }
+    }
+
     fn handle_toggle_overlay(
         &mut self,
         _: &ToggleOverlay,
@@ -1162,6 +1228,8 @@ impl Render for AppView {
             .on_action(cx.listener(Self::handle_remove_cursor))
             .on_action(cx.listener(Self::handle_next_cursor))
             .on_action(cx.listener(Self::handle_prev_cursor))
+            .on_action(cx.listener(Self::handle_cursor_undo))
+            .on_action(cx.listener(Self::handle_cursor_redo))
             .on_action(cx.listener(Self::handle_toggle_overlay))
             .on_action(cx.listener(Self::handle_toggle_queues))
             .on_action(cx.listener(Self::handle_layout_bottom))
