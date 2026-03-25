@@ -464,12 +464,12 @@ pub fn open_uscope(
         .map(|(idx, (sid, _))| (*sid, idx))
         .collect();
 
-    // Initialize counter series
+    // Initialize counter series with sparse samples
     let mut counter_series: Vec<CounterSeries> = counter_storages
         .iter()
         .map(|(_, name)| CounterSeries {
             name: name.clone(),
-            values: Vec::new(),
+            samples: Vec::new(),
             default_mode: CounterDisplayMode::Total,
         })
         .collect();
@@ -483,6 +483,8 @@ pub fn open_uscope(
     };
 
     // Replay all segments but ONLY process counters — skip instruction building.
+    // Instead of building dense per-cycle arrays, store one sparse sample per
+    // segment boundary (the cumulative value at the end of each segment).
     for seg_idx in 0..num_segments {
         let (_storages, items) = reader.segment_replay(seg_idx).map_err(TraceError::Io)?;
 
@@ -500,22 +502,10 @@ pub fn open_uscope(
             }
             // Only process counter ops — skip everything else.
             if let TimedItem::Op(op) = item {
-                let cycle = (op.time_ps / ids.period_ps) as u32;
                 if let Some(&counter_idx) = counter_storage_map.get(&op.storage_id) {
                     if op.action == DA_SLOT_ADD {
                         counter_accum[counter_idx] =
                             counter_accum[counter_idx].wrapping_add(op.value);
-                        let series = &mut counter_series[counter_idx];
-                        let val = counter_accum[counter_idx];
-                        let last_val = series.values.last().copied().unwrap_or(0);
-                        while series.values.len() < cycle as usize {
-                            series.values.push(last_val);
-                        }
-                        if (cycle as usize) < series.values.len() {
-                            series.values[cycle as usize] = val;
-                        } else {
-                            series.values.push(val);
-                        }
                     }
                 }
             }
@@ -524,18 +514,26 @@ pub fn open_uscope(
         // Record this segment's cycle bounds.
         if seg_min_cycle <= seg_max_cycle {
             segment_index.segments.push((seg_min_cycle, seg_max_cycle));
+            // Store one sparse sample per counter at the segment boundary.
+            for (counter_idx, series) in counter_series.iter_mut().enumerate() {
+                series
+                    .samples
+                    .push((seg_max_cycle, counter_accum[counter_idx]));
+            }
         } else {
             segment_index.segments.push((0, 0));
         }
     }
 
-    // Finalize counter series: fill to max_cycle with last known value
-    let total_cycles = (reader.header().total_time_ps / ids.period_ps) as usize;
-    for (idx, series) in counter_series.iter_mut().enumerate() {
-        let last_val = counter_accum[idx];
-        series
-            .values
-            .resize(total_cycles.max(series.values.len()), last_val);
+    // Add a final sample at the total trace extent for each counter.
+    let total_cycle = (reader.header().total_time_ps / ids.period_ps) as u32;
+    for (counter_idx, series) in counter_series.iter_mut().enumerate() {
+        let last_cycle = series.samples.last().map(|(c, _)| *c).unwrap_or(0);
+        if last_cycle < total_cycle {
+            series
+                .samples
+                .push((total_cycle, counter_accum[counter_idx]));
+        }
     }
     trace.counters = counter_series;
     trace.buffers = buffer_infos;
@@ -846,12 +844,12 @@ pub fn parse_uscope(path: &Path) -> Result<(PipelineTrace, Reader, SegmentIndex)
         .map(|(idx, (sid, _))| (*sid, idx))
         .collect();
 
-    // Initialize counter series
+    // Initialize counter series with sparse samples
     let mut counter_series: Vec<CounterSeries> = counter_storages
         .iter()
         .map(|(_, name)| CounterSeries {
             name: name.clone(),
-            values: Vec::new(),
+            samples: Vec::new(),
             default_mode: CounterDisplayMode::Total,
         })
         .collect();
@@ -894,19 +892,6 @@ pub fn parse_uscope(path: &Path) -> Result<(PipelineTrace, Reader, SegmentIndex)
                         if op.action == DA_SLOT_ADD {
                             counter_accum[counter_idx] =
                                 counter_accum[counter_idx].wrapping_add(op.value);
-                            let series = &mut counter_series[counter_idx];
-                            let val = counter_accum[counter_idx];
-                            // Fill gap cycles with previous value, then set current
-                            let last_val = series.values.last().copied().unwrap_or(0);
-                            while series.values.len() < cycle as usize {
-                                series.values.push(last_val);
-                            }
-                            if (cycle as usize) < series.values.len() {
-                                // Multiple updates in same cycle: overwrite
-                                series.values[cycle as usize] = val;
-                            } else {
-                                series.values.push(val);
-                            }
                         }
                         continue;
                     }
@@ -1060,22 +1045,29 @@ pub fn parse_uscope(path: &Path) -> Result<(PipelineTrace, Reader, SegmentIndex)
             }
         }
 
-        // Record this segment's cycle bounds.
+        // Record this segment's cycle bounds and store sparse counter samples.
         if seg_min_cycle <= seg_max_cycle {
             segment_index.segments.push((seg_min_cycle, seg_max_cycle));
+            for (counter_idx, series) in counter_series.iter_mut().enumerate() {
+                series
+                    .samples
+                    .push((seg_max_cycle, counter_accum[counter_idx]));
+            }
         } else {
             // Empty segment (no items): push a zero-width entry.
             segment_index.segments.push((0, 0));
         }
     }
 
-    // Finalize counter series: fill to max_cycle with last known value
-    let total_cycles = (reader.header().total_time_ps / ids.period_ps) as usize;
-    for (idx, series) in counter_series.iter_mut().enumerate() {
-        let last_val = counter_accum[idx];
-        series
-            .values
-            .resize(total_cycles.max(series.values.len()), last_val);
+    // Add a final sample at the total trace extent for each counter.
+    let total_cycle = (reader.header().total_time_ps / ids.period_ps) as u32;
+    for (counter_idx, series) in counter_series.iter_mut().enumerate() {
+        let last_cycle = series.samples.last().map(|(c, _)| *c).unwrap_or(0);
+        if last_cycle < total_cycle {
+            series
+                .samples
+                .push((total_cycle, counter_accum[counter_idx]));
+        }
     }
     trace.counters = counter_series;
     trace.buffers = buffer_infos;
@@ -1177,8 +1169,8 @@ mod tests {
             eprintln!(
                 "  counter '{}': {} samples, last={}",
                 c.name,
-                c.values.len(),
-                c.values.last().copied().unwrap_or(0)
+                c.samples.len(),
+                c.samples.last().map(|(_, v)| *v).unwrap_or(0)
             );
         }
     }

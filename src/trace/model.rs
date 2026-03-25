@@ -117,9 +117,10 @@ pub enum CounterDisplayMode {
 pub struct CounterSeries {
     /// Display name (scope-qualified if multi-scope trace).
     pub name: String,
-    /// Cumulative values indexed by cycle (0-based from trace start).
-    /// `values[cycle]` = total count at end of that cycle.
-    pub values: Vec<u64>,
+    /// Sparse counter samples: (cycle, cumulative_value) pairs.
+    /// One entry per segment boundary (from checkpoint data).
+    /// Sorted by cycle.
+    pub samples: Vec<(u32, u64)>,
     /// Default display mode.
     pub default_mode: CounterDisplayMode,
 }
@@ -253,13 +254,19 @@ impl PipelineTrace {
     }
 
     /// Get cumulative counter value at a cycle.
+    ///
+    /// Uses binary search over sparse samples. Returns the value from the
+    /// sample at or just before the given cycle.
     pub fn counter_value_at(&self, counter_idx: usize, cycle: u32) -> u64 {
         let series = &self.counters[counter_idx];
-        if series.values.is_empty() {
+        if series.samples.is_empty() {
             return 0;
         }
-        let idx = (cycle as usize).min(series.values.len() - 1);
-        series.values[idx]
+        match series.samples.binary_search_by_key(&cycle, |(c, _)| *c) {
+            Ok(i) => series.samples[i].1,
+            Err(0) => 0,
+            Err(i) => series.samples[i - 1].1,
+        }
     }
 
     /// Get counter rate over a window ending at the given cycle.
@@ -275,22 +282,70 @@ impl PipelineTrace {
     }
 
     /// Get single-cycle delta for a counter.
+    ///
+    /// With sparse samples, computes the interpolated per-cycle rate between
+    /// the two nearest samples surrounding the given cycle.
     pub fn counter_delta_at(&self, counter_idx: usize, cycle: u32) -> u64 {
-        let curr = self.counter_value_at(counter_idx, cycle);
-        let prev = if cycle > 0 {
-            self.counter_value_at(counter_idx, cycle - 1)
-        } else {
-            0
-        };
-        curr.wrapping_sub(prev)
+        let series = &self.counters[counter_idx];
+        if series.samples.is_empty() {
+            return 0;
+        }
+        // Find the sample interval containing this cycle and compute
+        // the average per-cycle delta within that interval.
+        match series.samples.binary_search_by_key(&cycle, |(c, _)| *c) {
+            Ok(i) => {
+                // Exact match on a sample boundary.
+                if i == 0 {
+                    // First sample: delta from 0 to this value over the cycles.
+                    let (c, v) = series.samples[0];
+                    if c == 0 {
+                        return v;
+                    }
+                    return v / c as u64;
+                }
+                let (prev_c, prev_v) = series.samples[i - 1];
+                let (cur_c, cur_v) = series.samples[i];
+                let span = cur_c.saturating_sub(prev_c) as u64;
+                if span == 0 {
+                    return 0;
+                }
+                cur_v.wrapping_sub(prev_v) / span
+            }
+            Err(0) => {
+                // Before the first sample.
+                if series.samples.is_empty() {
+                    return 0;
+                }
+                let (c, v) = series.samples[0];
+                if c == 0 {
+                    return 0;
+                }
+                v / c as u64
+            }
+            Err(i) if i >= series.samples.len() => {
+                // After the last sample: assume the counter stops changing.
+                0
+            }
+            Err(i) => {
+                // Between samples[i-1] and samples[i].
+                let (prev_c, prev_v) = series.samples[i - 1];
+                let (next_c, next_v) = series.samples[i];
+                let span = next_c.saturating_sub(prev_c) as u64;
+                if span == 0 {
+                    return 0;
+                }
+                next_v.wrapping_sub(prev_v) / span
+            }
+        }
     }
 
-    /// Downsample a counter's per-cycle deltas to min-max envelope buckets.
+    /// Downsample a counter to min-max envelope buckets over a cycle range.
     ///
-    /// Returns `bucket_count` pairs of `(min_delta, max_delta)` covering
-    /// `[start_cycle, end_cycle)`. Each bucket aggregates the deltas
-    /// (single-cycle changes) within its range. Useful for sparkline rendering
-    /// where many cycles compress into one pixel.
+    /// Returns `bucket_count` pairs of `(min_rate, max_rate)` covering
+    /// `[start_cycle, end_cycle)`. Each bucket reports the min and max
+    /// per-cycle rates among the sparse sample intervals that overlap
+    /// that bucket. Useful for sparkline rendering where many cycles
+    /// compress into one pixel.
     pub fn counter_downsample_minmax(
         &self,
         counter_idx: usize,
@@ -302,9 +357,35 @@ impl PipelineTrace {
             return Vec::new();
         }
         let series = &self.counters[counter_idx];
-        if series.values.is_empty() {
+        if series.samples.is_empty() {
             return vec![(0, 0); bucket_count];
         }
+
+        // Build a list of (interval_start_cycle, interval_end_cycle, per_cycle_rate)
+        // from the sparse samples. The first interval runs from cycle 0 to samples[0].
+        let mut intervals: Vec<(u32, u32, u64)> = Vec::with_capacity(series.samples.len() + 1);
+        if let Some(&(first_c, first_v)) = series.samples.first() {
+            if first_c > 0 {
+                let rate = if first_c > 0 {
+                    first_v / first_c as u64
+                } else {
+                    0
+                };
+                intervals.push((0, first_c, rate));
+            }
+        }
+        for w in series.samples.windows(2) {
+            let (c0, v0) = w[0];
+            let (c1, v1) = w[1];
+            let span = c1.saturating_sub(c0);
+            let rate = if span > 0 {
+                v1.wrapping_sub(v0) / span as u64
+            } else {
+                0
+            };
+            intervals.push((c0, c1, rate));
+        }
+
         let range = end_cycle.saturating_sub(start_cycle) as f64;
         let cycles_per_bucket = range / bucket_count as f64;
 
@@ -314,17 +395,23 @@ impl PipelineTrace {
             let bucket_end = start_cycle + ((b + 1) as f64 * cycles_per_bucket) as u32;
             let bucket_end = bucket_end.min(end_cycle);
 
-            let mut min_delta = u64::MAX;
-            let mut max_delta = 0u64;
-            for cy in bucket_start..bucket_end {
-                let delta = self.counter_delta_at(counter_idx, cy);
-                min_delta = min_delta.min(delta);
-                max_delta = max_delta.max(delta);
+            let mut min_rate = u64::MAX;
+            let mut max_rate = 0u64;
+
+            // Find intervals that overlap [bucket_start, bucket_end).
+            for &(iv_start, iv_end, rate) in &intervals {
+                if iv_start < bucket_end && iv_end > bucket_start {
+                    min_rate = min_rate.min(rate);
+                    max_rate = max_rate.max(rate);
+                }
             }
-            if min_delta == u64::MAX {
-                min_delta = 0;
+            if min_rate == u64::MAX {
+                // No intervals overlap this bucket — use interpolated value.
+                let rate = self.counter_delta_at(counter_idx, bucket_start);
+                min_rate = rate;
+                max_rate = rate;
             }
-            result.push((min_delta, max_delta));
+            result.push((min_rate, max_rate));
         }
         result
     }
@@ -537,25 +624,29 @@ mod tests {
     #[test]
     fn test_counter_value_at() {
         let mut trace = PipelineTrace::new();
+        // Sparse samples: (cycle, cumulative_value)
         trace.counters.push(CounterSeries {
             name: "committed_insns".to_string(),
-            // Cycles: 0=0, 1=2, 2=5, 3=5, 4=8
-            values: vec![0, 2, 5, 5, 8],
+            samples: vec![(0, 0), (2, 5), (4, 8)],
             default_mode: CounterDisplayMode::Total,
         });
         assert_eq!(trace.counter_value_at(0, 0), 0);
         assert_eq!(trace.counter_value_at(0, 2), 5);
         assert_eq!(trace.counter_value_at(0, 4), 8);
-        // Beyond range clamps to last value
+        // Between samples: uses previous sample
+        assert_eq!(trace.counter_value_at(0, 1), 0);
+        assert_eq!(trace.counter_value_at(0, 3), 5);
+        // Beyond range: uses last sample
         assert_eq!(trace.counter_value_at(0, 100), 8);
     }
 
     #[test]
     fn test_counter_rate_at() {
         let mut trace = PipelineTrace::new();
+        // Linear: 2 per cycle
         trace.counters.push(CounterSeries {
             name: "committed_insns".to_string(),
-            values: vec![0, 2, 4, 6, 8, 10],
+            samples: vec![(0, 0), (2, 4), (4, 8)],
             default_mode: CounterDisplayMode::Rate,
         });
         // Rate over 2-cycle window at cycle 4: (8-4)/2 = 2.0
@@ -567,35 +658,42 @@ mod tests {
     #[test]
     fn test_counter_delta_at() {
         let mut trace = PipelineTrace::new();
+        // Sparse samples at segment boundaries.
+        // Between cycle 0-2: cumulative goes 0→4, so avg rate = 4/2 = 2 per cycle.
+        // Between cycle 2-4: cumulative goes 4→10, so avg rate = 6/2 = 3 per cycle.
         trace.counters.push(CounterSeries {
             name: "bp_misses".to_string(),
-            values: vec![0, 0, 1, 1, 3],
+            samples: vec![(0, 0), (2, 4), (4, 10)],
             default_mode: CounterDisplayMode::Total,
         });
+        // At cycle 0 (exact match, first sample): delta is 0 (value/cycle=0/0)
         assert_eq!(trace.counter_delta_at(0, 0), 0);
-        assert_eq!(trace.counter_delta_at(0, 2), 1);
-        assert_eq!(trace.counter_delta_at(0, 3), 0);
-        assert_eq!(trace.counter_delta_at(0, 4), 2);
+        // At cycle 1 (between 0 and 2): avg rate = 4/2 = 2
+        assert_eq!(trace.counter_delta_at(0, 1), 2);
+        // At cycle 3 (between 2 and 4): avg rate = 6/2 = 3
+        assert_eq!(trace.counter_delta_at(0, 3), 3);
     }
 
     #[test]
     fn test_counter_downsample_minmax() {
         let mut trace = PipelineTrace::new();
-        // Cumulative: 0, 2, 5, 5, 8, 10, 10, 13, 15, 20
-        // Deltas:     0, 2, 3, 0, 3,  2,  0,  3,  2,  5
+        // Sparse samples with varying rates between segments.
+        // (0,0)→(5,10): rate=2/cycle, (5,10)→(10,20): rate=2/cycle
+        // But let's make it more interesting:
+        // (0,0)→(5,5): rate=1/cycle, (5,5)→(10,20): rate=3/cycle
         trace.counters.push(CounterSeries {
             name: "test".to_string(),
-            values: vec![0, 2, 5, 5, 8, 10, 10, 13, 15, 20],
+            samples: vec![(0, 0), (5, 5), (10, 20)],
             default_mode: CounterDisplayMode::Total,
         });
 
         // 2 buckets over 10 cycles: bucket 0 = cycles 0..5, bucket 1 = cycles 5..10
         let result = trace.counter_downsample_minmax(0, 0, 10, 2);
         assert_eq!(result.len(), 2);
-        // Bucket 0 deltas: 0, 2, 3, 0, 3 → min=0, max=3
-        assert_eq!(result[0], (0, 3));
-        // Bucket 1 deltas: 2, 0, 3, 2, 5 → min=0, max=5
-        assert_eq!(result[1], (0, 5));
+        // Bucket 0 covers interval (0,5) with rate=1 → min=1, max=1
+        assert_eq!(result[0], (1, 1));
+        // Bucket 1 covers interval (5,10) with rate=3 → min=3, max=3
+        assert_eq!(result[1], (3, 3));
 
         // Edge case: empty range
         assert_eq!(trace.counter_downsample_minmax(0, 5, 5, 10).len(), 0);
