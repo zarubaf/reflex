@@ -484,26 +484,43 @@ impl TraceState {
         }
         let (row_start, row_end) = self.viewport.visible_row_range();
         let row_end = row_end.min(self.trace.row_count());
+        if row_start >= row_end {
+            return;
+        }
 
-        let min_cycle = (row_start..row_end)
-            .filter(|&r| {
-                let instr = &self.trace.instructions[r];
-                instr.stage_range.start != instr.stage_range.end
-            })
-            .map(|r| self.trace.instructions[r].first_cycle)
-            .min();
+        // Find the cycle range of instructions with stages in the visible rows.
+        let mut min_cycle = u32::MAX;
+        let mut max_cycle = 0u32;
+        let mut has_stages = false;
+        for r in row_start..row_end {
+            let instr = &self.trace.instructions[r];
+            if instr.stage_range.start != instr.stage_range.end {
+                min_cycle = min_cycle.min(instr.first_cycle);
+                max_cycle = max_cycle.max(instr.last_cycle);
+                has_stages = true;
+            }
+        }
+        if !has_stages {
+            return;
+        }
 
-        let first_cycle = match min_cycle {
-            Some(c) => c,
-            None => return,
-        };
-
-        let margin = self.viewport.view_width as f64 * 0.05 / self.viewport.pixels_per_cycle as f64;
-        let target_cycle = (first_cycle as f64 - margin).max(0.0);
+        let view_cycles = self.viewport.view_width as f64 / self.viewport.pixels_per_cycle as f64;
+        let margin = view_cycles * 0.05;
+        let target_cycle = (min_cycle as f64 - margin).max(0.0);
 
         let current = self.viewport.scroll_cycle;
-        let blend = 0.3;
-        self.viewport.scroll_cycle = current + (target_cycle - current) * blend;
+        let distance = (target_cycle - current).abs();
+
+        // For large jumps (stages far from viewport), snap directly.
+        // For small adjustments, blend smoothly.
+        if distance > view_cycles * 2.0 {
+            // Snap: stages are way outside the viewport.
+            self.viewport.scroll_cycle = target_cycle;
+        } else {
+            // Smooth blend for small adjustments.
+            let blend = 0.3;
+            self.viewport.scroll_cycle = current + (target_cycle - current) * blend;
+        }
         self.viewport.clamp();
     }
 }

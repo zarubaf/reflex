@@ -378,8 +378,8 @@ impl Render for MinimapView {
                                     .clamp(0.0, width);
                                 let pv_right = ((pv_end as f64 / max_cycle as f64) as f32 * width)
                                     .clamp(0.0, width);
-                                let pv_width = (pv_right - pv_left).max(4.0).min(width - pv_left);
-                                let indicator_h = 4.0;
+                                let pv_width = (pv_right - pv_left).max(8.0).min(width - pv_left);
+                                let indicator_h = 5.0;
                                 window.paint_quad(PaintQuad {
                                     bounds: Bounds::new(
                                         point(
