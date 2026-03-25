@@ -315,12 +315,27 @@ impl TraceState {
                     self.loaded_segments.insert(idx);
                 }
 
+                // Remember which cycle the user is viewing so we can
+                // restore the scroll position after re-sorting.
+                let anchor_cycle = self.viewport.pixel_to_cycle(0.0);
+
                 // Clone the trace, merge new data, re-wrap in Arc.
                 let mut trace = (*self.trace).clone();
                 trace.merge_loaded(result.instructions, result.stages, result.dependencies);
 
                 // Update viewport bounds.
                 self.viewport.max_row = trace.row_count();
+
+                // Find the row closest to the anchor cycle and restore scroll_row.
+                // This prevents the viewport from jumping after merge re-sorts rows.
+                let target_row = trace
+                    .instructions
+                    .iter()
+                    .position(|instr| instr.first_cycle >= anchor_cycle as u32)
+                    .unwrap_or(0);
+                let view_rows = self.viewport.view_height as f64 / self.viewport.row_height as f64;
+                self.viewport.scroll_row = (target_row as f64 - view_rows / 4.0).max(0.0);
+                self.viewport.clamp();
 
                 self.trace = Arc::new(trace);
                 true
