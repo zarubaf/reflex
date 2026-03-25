@@ -1,3 +1,4 @@
+pub mod buffer_panel;
 pub mod counter_panel;
 pub mod goto_bar;
 pub mod help_overlay;
@@ -6,6 +7,7 @@ pub mod label_pane;
 pub mod log_panel;
 pub mod minimap_view;
 pub mod pipeline_panel;
+#[allow(dead_code)]
 pub mod queue_panel;
 pub mod search_bar;
 pub mod status_bar;

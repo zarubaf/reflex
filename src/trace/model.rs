@@ -4,6 +4,17 @@ use std::ops::Range;
 /// Interned stage name index.
 pub type StageNameIdx = u16;
 
+/// Information about a buffer storage detected from the uscope schema.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct BufferInfo {
+    pub name: String,
+    pub storage_id: u16,
+    pub capacity: u16,
+    /// Fields defined on this buffer: (name, field_type as u8).
+    pub fields: Vec<(String, u8)>,
+}
+
 /// A single stage span within an instruction's pipeline execution.
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
@@ -66,6 +77,7 @@ pub struct InstructionData {
 
 /// Occupancy snapshot of a queue at a specific cycle.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct QueueSlotEntry {
     /// Row index into `PipelineTrace::instructions`.
     pub row: usize,
@@ -79,6 +91,7 @@ pub struct QueueSlotEntry {
 
 /// Queue occupancy at a specific cycle.
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 pub struct QueueOccupancy {
     /// Retire queue: indexed by RBID → Option<QueueSlotEntry>.
     pub retire_queue: Vec<Option<QueueSlotEntry>>,
@@ -119,6 +132,8 @@ pub struct PipelineTrace {
     pub dependencies: Vec<Dependency>,
     /// Performance counter time-series parsed from uscope traces.
     pub counters: Vec<CounterSeries>,
+    /// Buffer storages detected from uscope schema (SF_BUFFER flag).
+    pub buffers: Vec<BufferInfo>,
     /// Key-value metadata from the trace source (DUT properties, format info, etc.).
     pub metadata: Vec<(String, String)>,
     /// Clock period in picoseconds (from uscope traces). Enables cycle↔timestamp conversion.
@@ -135,6 +150,7 @@ impl PipelineTrace {
             stages: Vec::new(),
             dependencies: Vec::new(),
             counters: Vec::new(),
+            buffers: Vec::new(),
             metadata: Vec::new(),
             period_ps: None,
             stage_names: Vec::new(),
@@ -199,6 +215,7 @@ impl PipelineTrace {
     }
 
     /// Look up a stage name index by name, if it exists.
+    #[allow(dead_code)]
     pub fn stage_name_idx(&self, name: &str) -> Option<StageNameIdx> {
         self.stage_name_map.get(name).copied()
     }
@@ -285,6 +302,7 @@ impl PipelineTrace {
     /// `retire_queue_size`: number of slots in the retire queue (e.g. 128).
     /// `issue_stages`: stage name indices that represent "in the issue queue".
     /// `retire_stages`: stage name indices that represent "in the retire queue".
+    #[allow(dead_code)]
     pub fn queue_occupancy_at(
         &self,
         cycle: u32,
