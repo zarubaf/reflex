@@ -124,6 +124,28 @@ pub struct CounterSeries {
     pub default_mode: CounterDisplayMode,
 }
 
+/// Lightweight index mapping segment indices to their cycle ranges.
+/// Built on load from uscope segment time bounds; enables binary search
+/// for "which segments cover cycles N..M?" in future lazy-loading phases.
+#[derive(Debug, Clone, Default)]
+pub struct SegmentIndex {
+    /// (start_cycle, end_cycle) per segment, ordered by segment index.
+    pub segments: Vec<(u32, u32)>,
+}
+
+impl SegmentIndex {
+    /// Find segment indices that overlap the given cycle range.
+    #[allow(dead_code)]
+    pub fn segments_in_range(&self, start_cycle: u32, end_cycle: u32) -> Vec<usize> {
+        self.segments
+            .iter()
+            .enumerate()
+            .filter(|(_, (seg_start, seg_end))| *seg_start < end_cycle && *seg_end > start_cycle)
+            .map(|(idx, _)| idx)
+            .collect()
+    }
+}
+
 /// The full pipeline trace — owns all data in SoA layout.
 #[derive(Debug, Clone)]
 pub struct PipelineTrace {

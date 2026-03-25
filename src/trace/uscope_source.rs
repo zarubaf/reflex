@@ -1,6 +1,6 @@
 use crate::trace::model::{
     CounterDisplayMode, CounterSeries, DepKind, Dependency, InstructionData, PipelineTrace,
-    RetireStatus, StageSpan,
+    RetireStatus, SegmentIndex, StageSpan,
 };
 use crate::trace::TraceError;
 use instruction_decoder::Decoder;
@@ -341,7 +341,7 @@ fn populate_metadata(
     }
 }
 
-pub fn parse_uscope(path: &Path) -> Result<PipelineTrace, TraceError> {
+pub fn parse_uscope(path: &Path) -> Result<(PipelineTrace, Reader, SegmentIndex), TraceError> {
     let path_str = path
         .to_str()
         .ok_or_else(|| TraceError::UnsupportedFormat("invalid path encoding".into()))?;
@@ -433,11 +433,25 @@ pub fn parse_uscope(path: &Path) -> Result<PipelineTrace, TraceError> {
     let mut next_reflex_id: u32 = 0;
 
     let num_segments = reader.segment_count();
+    let mut segment_index = SegmentIndex {
+        segments: Vec::with_capacity(num_segments),
+    };
 
     for seg_idx in 0..num_segments {
         let (_storages, items) = reader.segment_replay(seg_idx).map_err(TraceError::Io)?;
 
+        // Track min/max cycle for this segment to build the segment index.
+        let mut seg_min_cycle: u32 = u32::MAX;
+        let mut seg_max_cycle: u32 = 0;
+
         for item in items {
+            let item_cycle = (item.time_ps() / ids.period_ps) as u32;
+            if item_cycle < seg_min_cycle {
+                seg_min_cycle = item_cycle;
+            }
+            if item_cycle > seg_max_cycle {
+                seg_max_cycle = item_cycle;
+            }
             match item {
                 TimedItem::Op(op) => {
                     let cycle = (op.time_ps / ids.period_ps) as u32;
@@ -612,6 +626,14 @@ pub fn parse_uscope(path: &Path) -> Result<PipelineTrace, TraceError> {
                 }
             }
         }
+
+        // Record this segment's cycle bounds.
+        if seg_min_cycle <= seg_max_cycle {
+            segment_index.segments.push((seg_min_cycle, seg_max_cycle));
+        } else {
+            // Empty segment (no items): push a zero-width entry.
+            segment_index.segments.push((0, 0));
+        }
     }
 
     // Finalize counter series: fill to max_cycle with last known value
@@ -674,7 +696,7 @@ pub fn parse_uscope(path: &Path) -> Result<PipelineTrace, TraceError> {
         });
     }
 
-    Ok(trace)
+    Ok((trace, reader, segment_index))
 }
 
 #[cfg(test)]
@@ -696,8 +718,12 @@ mod tests {
         if !path.exists() {
             return; // skip if test data not available
         }
-        let trace = parse_uscope(path).unwrap();
+        let (trace, _reader, segment_index) = parse_uscope(path).unwrap();
         assert!(trace.row_count() > 0, "should have instructions");
+        assert!(
+            !segment_index.segments.is_empty(),
+            "should have segment index entries"
+        );
 
         // Instruction 0 should have disasm with mnemonic, not just hex address
         let instr0 = &trace.instructions[0];
