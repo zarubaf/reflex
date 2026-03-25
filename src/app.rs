@@ -764,8 +764,8 @@ impl AppView {
         cx: &mut Context<Self>,
     ) {
         let trace = generator::generate(&GeneratorConfig {
-            instruction_count: 1_000_000,
-            counter_count: 100,
+            instruction_count: 10_000,
+            counter_count: 4,
             ..Default::default()
         });
         let state = cx.new(|_cx| TraceState::new());
