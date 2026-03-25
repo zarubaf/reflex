@@ -575,35 +575,42 @@ impl Render for MinimapView {
                     // and set cursor to the clicked position.
                     if !did_drag && canvas_width > 0.0 {
                         let local_x = px_val(ev.position.x - canvas_origin.x);
-                        let ts = state.read(cx);
-                        let max_cycle = ts.trace.max_cycle();
+                        let max_cycle = state.read(cx).trace.max_cycle();
                         if max_cycle > 0 {
                             let clicked_cycle =
                                 (local_x as f64 / canvas_width as f64) * max_cycle as f64;
                             let clicked_cycle = clicked_cycle.clamp(0.0, max_cycle as f64);
+                            let cc = clicked_cycle as u32;
+
+                            // Ensure segments around the clicked cycle are loaded
+                            // so we can find instructions there.
+                            state.update(cx, |ts, _cx| {
+                                let vw = (ts.viewport.view_width as f64
+                                    / ts.viewport.pixels_per_cycle as f64)
+                                    as u32;
+                                ts.ensure_segments_loaded(
+                                    cc.saturating_sub(vw),
+                                    cc.saturating_add(vw).min(max_cycle),
+                                );
+                            });
+
+                            let ts = state.read(cx);
                             let view_cycles =
                                 ts.viewport.view_width as f64 / ts.viewport.pixels_per_cycle as f64;
                             let new_scroll = clicked_cycle - view_cycles / 2.0;
-                            // Find the first instruction active at the clicked cycle
-                            // to also center vertically.
+
+                            // Find the first instruction active at the clicked cycle.
                             let target_row = ts
                                 .trace
                                 .instructions
                                 .iter()
-                                .position(|instr| {
-                                    instr.first_cycle <= clicked_cycle as u32
-                                        && instr.last_cycle >= clicked_cycle as u32
-                                })
+                                .position(|instr| instr.first_cycle <= cc && instr.last_cycle >= cc)
                                 .unwrap_or(0);
                             let view_rows =
                                 ts.viewport.view_height as f64 / ts.viewport.row_height as f64;
 
                             state.update(cx, |ts, cx| {
-                                // Center pipeline viewport on clicked cycle.
-                                // Don't move the cursor — cursor only moves
-                                // when clicking inside the trace window.
                                 ts.viewport.scroll_cycle = new_scroll.max(0.0);
-                                // Also center vertically on the first active instruction.
                                 ts.viewport.scroll_row =
                                     (target_row as f64 - view_rows / 2.0).max(0.0);
                                 ts.viewport.clamp();
