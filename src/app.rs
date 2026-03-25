@@ -315,26 +315,31 @@ impl TraceState {
                     self.loaded_segments.insert(idx);
                 }
 
-                // Remember which cycle the user is viewing so we can
-                // restore the scroll position after re-sorting.
-                let anchor_cycle = self.viewport.pixel_to_cycle(0.0);
+                let old_row_count = self.trace.row_count();
 
                 // Clone the trace, merge new data, re-wrap in Arc.
                 let mut trace = (*self.trace).clone();
                 trace.merge_loaded(result.instructions, result.stages, result.dependencies);
 
-                // Update viewport bounds.
+                // Update max_row to the loaded count. We don't reset scroll_row here —
+                // the user's current scroll position should be preserved during normal
+                // segment loading. Only explicit navigation (minimap click, search, goto)
+                // should reposition the viewport.
                 self.viewport.max_row = trace.row_count();
 
-                // Find the row closest to the anchor cycle and restore scroll_row.
-                // This prevents the viewport from jumping after merge re-sorts rows.
-                let target_row = trace
-                    .instructions
-                    .iter()
-                    .position(|instr| instr.first_cycle >= anchor_cycle as u32)
-                    .unwrap_or(0);
-                let view_rows = self.viewport.view_height as f64 / self.viewport.row_height as f64;
-                self.viewport.scroll_row = (target_row as f64 - view_rows / 4.0).max(0.0);
+                // If this is the FIRST load (transitioning from 0 rows to having data),
+                // position the viewport at the first loaded instruction.
+                if old_row_count == 0 && trace.row_count() > 0 {
+                    let anchor_cycle = self.viewport.pixel_to_cycle(0.0);
+                    let target_row = trace
+                        .instructions
+                        .iter()
+                        .position(|instr| instr.first_cycle >= anchor_cycle as u32)
+                        .unwrap_or(0);
+                    let view_rows =
+                        self.viewport.view_height as f64 / self.viewport.row_height as f64;
+                    self.viewport.scroll_row = (target_row as f64 - view_rows / 4.0).max(0.0);
+                }
                 self.viewport.clamp();
 
                 self.trace = Arc::new(trace);
