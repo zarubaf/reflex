@@ -369,12 +369,11 @@ impl Render for CounterPanel {
                         }
                         let cycle_range = (vis_end - vis_start) as usize;
                         let bucket_count = (width as usize).min(cycle_range).max(1);
-                        let row_h = (height / num_counters as f32)
-                            .max(2.0)
-                            .min(HEATMAP_ROW_HEIGHT);
+                        let row_h = (height / num_counters as f32).clamp(2.0, HEATMAP_ROW_HEIGHT);
 
                         // Collect per-counter data + local_max + name.
-                        let heatmap_data: Vec<(Vec<(u64, u64)>, u64, String)> = ts
+                        type HeatmapRow = (Vec<(u64, u64)>, u64, String);
+                        let heatmap_data: Vec<HeatmapRow> = ts
                             .trace
                             .counters
                             .iter()
