@@ -1,0 +1,9 @@
+[book]
+authors = ["Florian Zaruba"]
+language = "en"
+src = "src"
+title = "Reflex User Guide"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"

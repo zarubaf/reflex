@@ -50,10 +50,22 @@ Or drag and drop trace files onto the window.
 - **Konata/Kanata** (`.log`, `.konata`, `.kanata`) — The [Kanata log format](https://github.com/shioyadan/Konata/blob/master/docs/kanata-log-format.md) used by CPU simulators. Compatible with [Konata](https://github.com/shioyadan/Konata).
 - **µScope** (`.uscope`) — Binary format from [µScope](https://github.com/zarubaf/uscope) with CPU protocol semantics, checkpointed random access, and LZ4 compression.
 
-## Building
+## Documentation
 
-Requires Rust and macOS (GPUI currently targets macOS).
+See the full [User Guide](docs/src/SUMMARY.md) for detailed documentation on all features, including performance counters, minimap, timeline overlay, and configuration.
+
+Build the documentation locally:
 
 ```
+mdbook serve docs/
+```
+
+## Building
+
+Requires Rust (macOS or Linux). See [Building from Source](docs/src/building.md) for details.
+
+```
+git clone --recurse-submodules https://github.com/zarubaf/reflex.git
+cd reflex
 cargo build --release
 ```
