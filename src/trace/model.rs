@@ -160,6 +160,9 @@ pub struct PipelineTrace {
     pub metadata: Vec<(String, String)>,
     /// Clock period in picoseconds (from uscope traces). Enables cycle↔timestamp conversion.
     pub period_ps: Option<u64>,
+    /// If set, `max_cycle()` returns this value instead of computing from instructions.
+    /// Used by lazy-loading to report the full trace extent before instructions are loaded.
+    pub max_cycle_override: Option<u32>,
     stage_names: Vec<String>,
     stage_name_map: HashMap<String, StageNameIdx>,
     id_to_row: HashMap<u32, usize>,
@@ -175,6 +178,7 @@ impl PipelineTrace {
             buffers: Vec::new(),
             metadata: Vec::new(),
             period_ps: None,
+            max_cycle_override: None,
             stage_names: Vec::new(),
             stage_name_map: HashMap::new(),
             id_to_row: HashMap::new(),
@@ -228,7 +232,13 @@ impl PipelineTrace {
     }
 
     /// The maximum cycle across all stages (for viewport bounds).
+    /// When `max_cycle_override` is set (lazy-loading mode), returns that
+    /// value so the viewport knows the full trace extent even before
+    /// all instructions are loaded.
     pub fn max_cycle(&self) -> u32 {
+        if let Some(ov) = self.max_cycle_override {
+            return ov;
+        }
         self.instructions
             .iter()
             .map(|i| i.last_cycle)
@@ -411,7 +421,38 @@ impl PipelineTrace {
         }
     }
 
-    /// Rebuild the id→row mapping (e.g. after deserialization).
+    /// Merge instructions, stages, and dependencies from a segment load.
+    ///
+    /// The incoming `stage_range` values are relative to the incoming `stages`
+    /// slice. This method offsets them to match the existing `self.stages` vec,
+    /// appends everything, then re-sorts instructions by `first_cycle` and
+    /// rebuilds the `id_to_row` map.
+    pub fn merge_loaded(
+        &mut self,
+        mut instructions: Vec<InstructionData>,
+        stages: Vec<StageSpan>,
+        dependencies: Vec<Dependency>,
+    ) {
+        let stage_offset = self.stages.len() as u32;
+        for instr in &mut instructions {
+            instr.stage_range =
+                (instr.stage_range.start + stage_offset)..(instr.stage_range.end + stage_offset);
+        }
+        self.stages.extend(stages);
+        self.dependencies.extend(dependencies);
+        self.instructions.extend(instructions);
+
+        // Re-sort all instructions by first_cycle for correct rendering order.
+        // This is needed because newly loaded segments may interleave with
+        // previously loaded ones.
+        self.instructions
+            .sort_by(|a, b| a.first_cycle.cmp(&b.first_cycle).then(a.id.cmp(&b.id)));
+
+        // Rebuild id→row map after re-sort.
+        self.rebuild_id_map();
+    }
+
+    /// Rebuild the id→row mapping (e.g. after deserialization or merge).
     #[allow(dead_code)]
     pub fn rebuild_id_map(&mut self) {
         self.id_to_row.clear();
