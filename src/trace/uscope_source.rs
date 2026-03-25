@@ -407,6 +407,32 @@ fn parse_uscope(path: &Path) -> Result<PipelineTrace, TraceError> {
         })
         .collect();
 
+    // Detect buffer storages: have SF_BUFFER flag
+    let buffer_infos: Vec<crate::trace::model::BufferInfo> = schema
+        .storages
+        .iter()
+        .filter(|s| s.is_buffer())
+        .map(|s| {
+            let name = schema.get_string(s.name).unwrap_or("?").to_string();
+            let fields: Vec<(String, u8)> = s
+                .fields
+                .iter()
+                .map(|f| {
+                    (
+                        schema.get_string(f.name).unwrap_or("?").to_string(),
+                        f.field_type,
+                    )
+                })
+                .collect();
+            crate::trace::model::BufferInfo {
+                name,
+                storage_id: s.storage_id,
+                capacity: s.num_slots,
+                fields,
+            }
+        })
+        .collect();
+
     // Map storage_id → index into counter_series
     let counter_storage_map: HashMap<u16, usize> = counter_storages
         .iter()
@@ -624,6 +650,7 @@ fn parse_uscope(path: &Path) -> Result<PipelineTrace, TraceError> {
             .resize(total_cycles.max(series.values.len()), last_val);
     }
     trace.counters = counter_series;
+    trace.buffers = buffer_infos;
 
     // Finalize remaining in-flight instructions
     for (_eid, b) in builders.drain() {
