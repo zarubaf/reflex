@@ -222,7 +222,7 @@ impl Render for MinimapView {
                                 if needs_update {
                                     let ts = state.read(cx);
                                     if counter_idx < ts.trace.counters.len() {
-                                        let data = ts.trace.counter_downsample_minmax(
+                                        let data = ts.counter_downsample(
                                             counter_idx,
                                             0,
                                             max_cycle,
