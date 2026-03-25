@@ -340,8 +340,9 @@ impl TraceState {
         uscope_ctx: crate::trace::uscope_source::UscopeContext,
     ) {
         self.viewport.max_cycle = trace.max_cycle();
-        // max_row starts at 0 — will grow as segments are loaded.
-        self.viewport.max_row = 0;
+        // Use total instruction count for max_row so the scrollbar
+        // represents the full trace, not just loaded instructions.
+        self.viewport.max_row = trace.total_instruction_count;
         self.viewport.clamp();
         let period_ps = trace.period_ps.unwrap_or(1000);
         self.trace = Arc::new(trace);
@@ -430,11 +431,13 @@ impl TraceState {
                 let mut trace = (*self.trace).clone();
                 trace.merge_loaded(result.instructions, result.stages, result.dependencies);
 
-                // Update max_row to the loaded count. We don't reset scroll_row here —
-                // the user's current scroll position should be preserved during normal
-                // segment loading. Only explicit navigation (minimap click, search, goto)
-                // should reposition the viewport.
-                self.viewport.max_row = trace.row_count();
+                // Keep max_row at total_instruction_count (not loaded count)
+                // so the scrollbar represents the full trace.
+                // Only update if the loaded count exceeds the current max
+                // (can happen with generator traces where total isn't set).
+                if trace.row_count() > self.viewport.max_row {
+                    self.viewport.max_row = trace.row_count();
+                }
 
                 // If this is the FIRST load (transitioning from 0 rows to having data),
                 // position the viewport at the first loaded instruction.
