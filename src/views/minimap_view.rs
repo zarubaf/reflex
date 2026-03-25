@@ -583,11 +583,28 @@ impl Render for MinimapView {
                             let view_cycles =
                                 ts.viewport.view_width as f64 / ts.viewport.pixels_per_cycle as f64;
                             let new_scroll = clicked_cycle - view_cycles / 2.0;
+                            // Find the first instruction active at the clicked cycle
+                            // to also center vertically.
+                            let target_row = ts
+                                .trace
+                                .instructions
+                                .iter()
+                                .position(|instr| {
+                                    instr.first_cycle <= clicked_cycle as u32
+                                        && instr.last_cycle >= clicked_cycle as u32
+                                })
+                                .unwrap_or(0);
+                            let view_rows =
+                                ts.viewport.view_height as f64 / ts.viewport.row_height as f64;
+
                             state.update(cx, |ts, cx| {
                                 // Center pipeline viewport on clicked cycle.
                                 // Don't move the cursor — cursor only moves
                                 // when clicking inside the trace window.
                                 ts.viewport.scroll_cycle = new_scroll.max(0.0);
+                                // Also center vertically on the first active instruction.
+                                ts.viewport.scroll_row =
+                                    (target_row as f64 - view_rows / 2.0).max(0.0);
                                 ts.viewport.clamp();
                                 cx.notify();
                             });
