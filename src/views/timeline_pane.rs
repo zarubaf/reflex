@@ -29,12 +29,19 @@ pub fn header_height(n_cursors: usize) -> f32 {
     }
 }
 
+/// Click detection threshold in pixels.
+const CLICK_THRESHOLD: f32 = 4.0;
+
 pub struct TimelinePane {
     state: Entity<TraceState>,
     focus_handle: FocusHandle,
     dragging: bool,
     dragging_cursor: Option<usize>,
+    /// Whether mouse moved enough to be a drag (not a click).
+    did_drag: bool,
     last_mouse: Option<Point<Pixels>>,
+    /// Mouse-down position for click-vs-drag detection.
+    click_start: Option<Point<Pixels>>,
     canvas_origin: Point<Pixels>,
 }
 
@@ -45,7 +52,9 @@ impl TimelinePane {
             focus_handle: cx.focus_handle(),
             dragging: false,
             dragging_cursor: None,
+            did_drag: false,
             last_mouse: None,
+            click_start: None,
             canvas_origin: Point::default(),
         }
     }
@@ -61,6 +70,7 @@ impl Render for TimelinePane {
         let state_for_scroll = self.state.clone();
         let state_for_down = self.state.clone();
         let state_for_move = self.state.clone();
+        let state_for_up = self.state.clone();
         let entity_for_prepaint = cx.entity().clone();
         let entity_for_down = cx.entity().clone();
         let entity_for_move = cx.entity().clone();
@@ -124,23 +134,13 @@ impl Render for TimelinePane {
                             cx.notify();
                         });
                     } else {
-                        // Normal click: select row + move active cursor.
+                        // Start potential drag — don't set cursor yet.
+                        // Cursor is set on mouse_up if it was a click (not a drag).
                         entity_for_down.update(cx, |pane: &mut TimelinePane, _cx| {
                             pane.dragging = true;
+                            pane.did_drag = false;
                             pane.last_mouse = Some(event.position);
-                        });
-                        // Content area is offset by hdr_h.
-                        let content_y = local_y - hdr_h;
-                        state_for_down.update(cx, |ts, cx| {
-                            let row = ts.viewport.pixel_to_row(content_y) as usize;
-                            if row < ts.trace.row_count() {
-                                ts.selected_row = Some(row);
-                            }
-                            let cycle = ts.viewport.pixel_to_cycle(local_x).round();
-                            if !ts.cursor_state.cursors.is_empty() {
-                                ts.cursor_state.cursors[ts.cursor_state.active_idx].cycle = cycle;
-                            }
-                            cx.notify();
+                            pane.click_start = Some(event.position);
                         });
                     }
                 },
@@ -159,12 +159,21 @@ impl Render for TimelinePane {
                             drag_delta = Some((dx, dy));
                         }
                         pane.last_mouse = Some(event.position);
+                        // Mark as drag if moved beyond threshold.
+                        if let Some(start) = pane.click_start {
+                            let total_dx = (px_val(event.position.x) - px_val(start.x)).abs();
+                            let total_dy = (px_val(event.position.y) - px_val(start.y)).abs();
+                            if total_dx > CLICK_THRESHOLD || total_dy > CLICK_THRESHOLD {
+                                pane.did_drag = true;
+                            }
+                        }
                     }
                 });
                 if let Some(idx) = cursor_drag_idx {
                     let local_x = px_val(event.position.x) - px_val(canvas_origin.x);
                     state_for_move.update(cx, |ts, cx| {
                         let cycle = ts.viewport.pixel_to_cycle(local_x).round();
+                        // Direct set during drag (no history per drag frame).
                         if idx < ts.cursor_state.cursors.len() {
                             ts.cursor_state.cursors[idx].cycle = cycle;
                         }
@@ -179,11 +188,34 @@ impl Render for TimelinePane {
             })
             .on_mouse_up(
                 MouseButton::Left,
-                move |_event: &MouseUpEvent, _window, cx| {
+                move |event: &MouseUpEvent, _window, cx| {
+                    let (did_drag, origin) = {
+                        let pane = entity_for_up.read(cx);
+                        (pane.did_drag, pane.canvas_origin)
+                    };
+
+                    // If it was a click (not a drag), select row + move cursor.
+                    if !did_drag {
+                        let local_x = px_val(event.position.x) - px_val(origin.x);
+                        let local_y = px_val(event.position.y) - px_val(origin.y);
+                        let content_y = local_y - hdr_h;
+                        state_for_up.update(cx, |ts, cx| {
+                            let row = ts.viewport.pixel_to_row(content_y) as usize;
+                            if row < ts.trace.row_count() {
+                                ts.selected_row = Some(row);
+                            }
+                            let cycle = ts.viewport.pixel_to_cycle(local_x).round();
+                            ts.cursor_state.move_cursor(cycle);
+                            cx.notify();
+                        });
+                    }
+
                     entity_for_up.update(cx, |pane: &mut TimelinePane, _cx| {
                         pane.dragging = false;
                         pane.dragging_cursor = None;
+                        pane.did_drag = false;
                         pane.last_mouse = None;
+                        pane.click_start = None;
                     });
                 },
             )
