@@ -214,6 +214,8 @@ pub struct TraceState {
     pub uscope_ctx: Option<crate::trace::uscope_source::UscopeContext>,
     /// Set of segment indices whose instructions have been loaded into the trace.
     pub loaded_segments: HashSet<usize>,
+    /// Pre-computed counter mipmaps for fast multi-resolution queries.
+    pub counter_summary: Option<uscope::summary::CounterSummary>,
 }
 
 impl TraceState {
@@ -232,12 +234,82 @@ impl TraceState {
             segment_index: SegmentIndex::default(),
             uscope_ctx: None,
             loaded_segments: HashSet::new(),
+            counter_summary: None,
         }
     }
 
     /// Get the effective counter display range (defaults to full trace).
     pub fn effective_counter_range(&self) -> (u32, u32) {
         self.counter_range.unwrap_or((0, self.trace.max_cycle()))
+    }
+
+    /// Fast counter downsampling using mipmaps when available.
+    /// Falls back to PipelineTrace::counter_downsample_minmax() for sparse samples.
+    pub fn counter_downsample(
+        &self,
+        counter_idx: usize,
+        start_cycle: u32,
+        end_cycle: u32,
+        bucket_count: usize,
+    ) -> Vec<(u64, u64)> {
+        if bucket_count == 0 || start_cycle >= end_cycle {
+            return Vec::new();
+        }
+
+        // Try mipmap first.
+        if let Some(ref summary) = self.counter_summary {
+            if counter_idx < summary.counters.len() {
+                let mipmap = &summary.counters[counter_idx];
+                let range_cycles = end_cycle - start_cycle;
+                let cycles_per_bucket = range_cycles as f64 / bucket_count as f64;
+
+                // Pick the mipmap level where each mipmap entry covers
+                // roughly one output bucket (or slightly finer).
+                let base = summary.base_interval_cycles as f64;
+                let fan = summary.fan_out as f64;
+                let mut level = 0usize;
+                let mut level_interval = base;
+                while level + 1 < mipmap.levels.len() && level_interval * fan <= cycles_per_bucket {
+                    level += 1;
+                    level_interval *= fan;
+                }
+
+                let entries = &mipmap.levels[level];
+                if entries.is_empty() {
+                    return vec![(0, 0); bucket_count];
+                }
+
+                // Map output buckets to mipmap entries.
+                let level_interval = summary.base_interval_cycles as f64
+                    * (summary.fan_out as f64).powi(level as i32);
+
+                let mut result = Vec::with_capacity(bucket_count);
+                for b in 0..bucket_count {
+                    let b_start = start_cycle as f64 + b as f64 * cycles_per_bucket;
+                    let b_end = b_start + cycles_per_bucket;
+
+                    // Find mipmap entries overlapping this bucket.
+                    let entry_start = (b_start / level_interval) as usize;
+                    let entry_end = ((b_end / level_interval).ceil() as usize).min(entries.len());
+
+                    let mut min_d = u64::MAX;
+                    let mut max_d = 0u64;
+                    for entry in &entries[entry_start..entry_end] {
+                        min_d = min_d.min(entry.min_delta);
+                        max_d = max_d.max(entry.max_delta);
+                    }
+                    if min_d == u64::MAX {
+                        min_d = 0;
+                    }
+                    result.push((min_d, max_d));
+                }
+                return result;
+            }
+        }
+
+        // Fallback to sparse sample method.
+        self.trace
+            .counter_downsample_minmax(counter_idx, start_cycle, end_cycle, bucket_count)
     }
 
     pub fn load_trace(
@@ -269,8 +341,29 @@ impl TraceState {
         // max_row starts at 0 — will grow as segments are loaded.
         self.viewport.max_row = 0;
         self.viewport.clamp();
+        let period_ps = trace.period_ps.unwrap_or(1000);
         self.trace = Arc::new(trace);
         self.reader = Some(reader);
+        // Compute counter mipmaps for fast multi-resolution queries.
+        if let Some(ref mut rdr) = self.reader {
+            match uscope::summary::compute_counter_summary(rdr, period_ps) {
+                Ok(summary) => {
+                    eprintln!(
+                        "Computed counter mipmaps: {} counters, {} levels",
+                        summary.counters.len(),
+                        summary
+                            .counters
+                            .first()
+                            .map(|c| c.levels.len())
+                            .unwrap_or(0)
+                    );
+                    self.counter_summary = Some(summary);
+                }
+                Err(e) => {
+                    eprintln!("Warning: failed to compute counter mipmaps: {}", e);
+                }
+            }
+        }
         self.segment_index = segment_index;
         self.uscope_ctx = Some(uscope_ctx);
         self.loaded_segments.clear();
