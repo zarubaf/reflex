@@ -482,8 +482,9 @@ pub fn open_uscope(
         segments: Vec::with_capacity(num_segments),
     };
 
-    // Replay all segments: process counters and count total instructions.
+    // Replay all segments: process counters and build global instruction index.
     let mut total_instruction_count: usize = 0;
+    let mut instruction_index: Vec<(u32, u32)> = Vec::new();
     for seg_idx in 0..num_segments {
         let (_storages, items) = reader.segment_replay(seg_idx).map_err(TraceError::Io)?;
 
@@ -500,12 +501,13 @@ pub fn open_uscope(
                 seg_max_cycle = item_cycle;
             }
             if let TimedItem::Op(op) = item {
-                // Count entity creations (new instructions).
+                // Track entity creations for the global instruction index.
                 if op.storage_id == ids.entities_storage_id
                     && op.action == DA_SLOT_SET
                     && op.field_index == ids.field_entity_id
                 {
                     total_instruction_count += 1;
+                    instruction_index.push((item_cycle, op.value as u32));
                 }
                 // Process counter ops.
                 if let Some(&counter_idx) = counter_storage_map.get(&op.storage_id) {
@@ -543,7 +545,10 @@ pub fn open_uscope(
     }
     trace.counters = counter_series;
     trace.buffers = buffer_infos;
+    // Sort the instruction index by first_cycle for consistent row ordering.
+    instruction_index.sort_by_key(|(cycle, _)| *cycle);
     trace.total_instruction_count = total_instruction_count;
+    trace.instruction_index = instruction_index;
 
     // Set max_cycle from header total_time_ps (covers all segments).
     trace.max_cycle_override = Some((reader.header().total_time_ps / ids.period_ps) as u32);
