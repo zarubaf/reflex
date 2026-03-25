@@ -508,8 +508,8 @@ impl Render for MinimapView {
                             let dx = mouse_cycle - start_cycle;
                             let (_, cr_end) = ts.effective_counter_range();
                             let cr_width = cr_end as f64 - start_scroll;
-                            let new_start =
-                                (start_scroll + dx).clamp(0.0, max_cycle as f64 - cr_width);
+                            let max_start = (max_cycle as f64 - cr_width).max(0.0);
+                            let new_start = (start_scroll + dx).clamp(0.0, max_start);
                             let new_end = (new_start + cr_width).min(max_cycle as f64);
                             state.update(cx, |ts, cx| {
                                 ts.counter_range = Some((new_start as u32, new_end as u32));
@@ -560,8 +560,8 @@ impl Render for MinimapView {
                 let cr_width = cr_width.clamp(10.0, max_cycle as f64);
                 let focal_frac =
                     (focal_cycle - cr_start as f64) / (cr_end as f64 - cr_start as f64).max(1.0);
-                let new_start =
-                    (focal_cycle - focal_frac * cr_width).clamp(0.0, max_cycle as f64 - cr_width);
+                let new_start = (focal_cycle - focal_frac * cr_width)
+                    .clamp(0.0, (max_cycle as f64 - cr_width).max(0.0));
                 let new_end = (new_start + cr_width).min(max_cycle as f64);
 
                 this.state.update(cx, |ts, cx| {
