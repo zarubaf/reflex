@@ -1,3 +1,6 @@
+// Legacy queue panel — kept for reference, no longer used by app.rs.
+// Buffer panels (`buffer_panel.rs`) dynamically replace this.
+
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 

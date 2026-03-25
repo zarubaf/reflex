@@ -15,6 +15,7 @@ use crate::title_bar::render_title_bar;
 use crate::trace::generator::{self, GeneratorConfig};
 use crate::trace::model::PipelineTrace;
 use crate::trace::TraceRegistry;
+use crate::views::buffer_panel::BufferPanel;
 use crate::views::counter_panel::CounterPanel;
 use crate::views::goto_bar::GotoBar;
 use crate::views::help_overlay::HelpOverlay;
@@ -22,7 +23,6 @@ use crate::views::info_overlay::InfoOverlay;
 use crate::views::log_panel::{LogBuffer, LogPanel};
 use crate::views::minimap_view::MinimapView;
 use crate::views::pipeline_panel::PipelinePanel;
-use crate::views::queue_panel::{QueueKind, QueuePanel};
 use crate::views::search_bar::SearchBar;
 use crate::views::status_bar::StatusBar;
 use crate::wcp::WcpClient;
@@ -318,9 +318,7 @@ pub struct AppView {
     pipeline_panel: Entity<PipelinePanel>,
     counter_panel: Entity<CounterPanel>,
     minimap_view: Entity<MinimapView>,
-    retire_queue_tab: Entity<QueuePanel>,
-    dispatch_queue_tab: Entity<QueuePanel>,
-    issue_queue_tab: Entity<QueuePanel>,
+    buffer_panels: Vec<Entity<BufferPanel>>,
     log_panel: Entity<LogPanel>,
     log_buffer: LogBuffer,
     queue_placement: DockPlacement,
@@ -354,21 +352,16 @@ impl AppView {
         let pipeline_panel = cx.new(|cx| PipelinePanel::new(placeholder.clone(), window, cx));
         let counter_panel = cx.new(|cx| CounterPanel::new(placeholder.clone(), cx));
         let minimap_view = cx.new(|cx| MinimapView::new(placeholder.clone(), cx));
-        let retire_queue_tab =
-            cx.new(|cx| QueuePanel::new(placeholder.clone(), QueueKind::Retire, cx));
-        let dispatch_queue_tab =
-            cx.new(|cx| QueuePanel::new(placeholder.clone(), QueueKind::Dispatch, cx));
-        let issue_queue_tab =
-            cx.new(|cx| QueuePanel::new(placeholder.clone(), QueueKind::Issue, cx));
+        let buffer_panels: Vec<Entity<BufferPanel>> = (0..placeholder.read(cx).trace.buffers.len())
+            .map(|i| cx.new(|cx| BufferPanel::new(placeholder.clone(), i, cx)))
+            .collect();
         let log_buffer = LogBuffer::new();
         let log_panel = cx.new(|cx| LogPanel::new(log_buffer.clone(), cx));
         let queue_placement = DockPlacement::Bottom;
         let dock_area = Self::build_dock_area(
             &pipeline_panel,
             &counter_panel,
-            &retire_queue_tab,
-            &dispatch_queue_tab,
-            &issue_queue_tab,
+            &buffer_panels,
             &log_panel,
             queue_placement,
             false,
@@ -384,9 +377,7 @@ impl AppView {
             pipeline_panel,
             counter_panel,
             minimap_view,
-            retire_queue_tab,
-            dispatch_queue_tab,
-            issue_queue_tab,
+            buffer_panels,
             log_panel,
             log_buffer,
             queue_placement,
@@ -446,26 +437,22 @@ impl AppView {
         self.rebuild_panel(window, cx);
     }
 
-    /// Build a DockArea with the pipeline panel in the center and queue tabs at the given placement.
+    /// Build a DockArea with the pipeline panel in the center and buffer panels at the given placement.
     #[allow(clippy::too_many_arguments)]
     fn build_dock_area(
         pipeline_panel: &Entity<PipelinePanel>,
         counter_panel: &Entity<CounterPanel>,
-        retire_tab: &Entity<QueuePanel>,
-        dispatch_tab: &Entity<QueuePanel>,
-        issue_tab: &Entity<QueuePanel>,
+        buffer_panels: &[Entity<BufferPanel>],
         log_panel: &Entity<LogPanel>,
         placement: DockPlacement,
-        queue_visible: bool,
+        dock_visible: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<DockArea> {
         let pp = pipeline_panel.clone();
         let cp = counter_panel.clone();
-        let rq = retire_tab.clone();
-        let dq = dispatch_tab.clone();
-        let iq = issue_tab.clone();
         let lp = log_panel.clone();
+        let buffers: Vec<Entity<BufferPanel>> = buffer_panels.to_vec();
         cx.new(|cx| {
             let mut dock_area = DockArea::new("main", None, window, cx);
             let weak = cx.entity().downgrade();
@@ -473,69 +460,81 @@ impl AppView {
             let center = DockItem::tabs(center_tabs, &weak, window, cx);
             dock_area.set_center(center, window, cx);
 
-            // For left/right docks, stack queue tabs vertically; for bottom, horizontally.
-            // Log tab is grouped with Issue Queues (background tab, not active by default).
-            let iq_log_tabs: Vec<Arc<dyn PanelView>> = vec![Arc::new(iq), Arc::new(lp)];
-            let queue_items = vec![
-                DockItem::tab(rq, &weak, window, cx),
-                DockItem::tab(dq, &weak, window, cx),
-                DockItem::tabs(iq_log_tabs, &weak, window, cx),
-            ];
-            let queue_split = match placement {
-                DockPlacement::Bottom => DockItem::h_split(queue_items, &weak, window, cx),
-                _ => DockItem::v_split(queue_items, &weak, window, cx),
-            };
+            // Only set a dock if there are buffer panels or a log panel to show.
+            if !buffers.is_empty() {
+                // Build one dock item per buffer panel. The last one also gets the log tab.
+                let mut dock_items: Vec<DockItem> = Vec::new();
+                for (i, bp) in buffers.iter().enumerate() {
+                    if i == buffers.len() - 1 {
+                        // Group last buffer with the log panel as tabs.
+                        let tabs: Vec<Arc<dyn PanelView>> =
+                            vec![Arc::new(bp.clone()), Arc::new(lp.clone())];
+                        dock_items.push(DockItem::tabs(tabs, &weak, window, cx));
+                    } else {
+                        dock_items.push(DockItem::tab(bp.clone(), &weak, window, cx));
+                    }
+                }
 
-            match placement {
-                DockPlacement::Left => {
-                    dock_area.set_left_dock(
-                        queue_split,
-                        Some(px(300.0)),
-                        queue_visible,
-                        window,
-                        cx,
-                    );
-                    // Left/right docks have no collapsed header, so prevent collapsing.
-                    dock_area.set_dock_collapsible(
-                        Edges {
-                            left: false,
-                            right: true,
-                            top: true,
-                            bottom: true,
-                        },
-                        window,
-                        cx,
-                    );
+                let dock_split = match placement {
+                    DockPlacement::Bottom => DockItem::h_split(dock_items, &weak, window, cx),
+                    _ => DockItem::v_split(dock_items, &weak, window, cx),
+                };
+
+                match placement {
+                    DockPlacement::Left => {
+                        dock_area.set_left_dock(
+                            dock_split,
+                            Some(px(300.0)),
+                            dock_visible,
+                            window,
+                            cx,
+                        );
+                        dock_area.set_dock_collapsible(
+                            Edges {
+                                left: false,
+                                right: true,
+                                top: true,
+                                bottom: true,
+                            },
+                            window,
+                            cx,
+                        );
+                    }
+                    DockPlacement::Right => {
+                        dock_area.set_right_dock(
+                            dock_split,
+                            Some(px(300.0)),
+                            dock_visible,
+                            window,
+                            cx,
+                        );
+                        dock_area.set_dock_collapsible(
+                            Edges {
+                                left: true,
+                                right: false,
+                                top: true,
+                                bottom: true,
+                            },
+                            window,
+                            cx,
+                        );
+                    }
+                    DockPlacement::Bottom | DockPlacement::Center => {
+                        dock_area.set_bottom_dock(
+                            dock_split,
+                            Some(px(250.0)),
+                            dock_visible,
+                            window,
+                            cx,
+                        );
+                    }
                 }
-                DockPlacement::Right => {
-                    dock_area.set_right_dock(
-                        queue_split,
-                        Some(px(300.0)),
-                        queue_visible,
-                        window,
-                        cx,
-                    );
-                    dock_area.set_dock_collapsible(
-                        Edges {
-                            left: true,
-                            right: false,
-                            top: true,
-                            bottom: true,
-                        },
-                        window,
-                        cx,
-                    );
-                }
-                DockPlacement::Bottom | DockPlacement::Center => {
-                    dock_area.set_bottom_dock(
-                        queue_split,
-                        Some(px(250.0)),
-                        queue_visible,
-                        window,
-                        cx,
-                    );
-                }
+            } else {
+                // No buffers: just put the log panel in the dock.
+                let log_tab = DockItem::tab(lp, &weak, window, cx);
+                dock_area.set_bottom_dock(log_tab, Some(px(200.0)), dock_visible, window, cx);
             }
+
             dock_area
         })
     }
@@ -546,27 +545,24 @@ impl AppView {
             self.pipeline_panel = cx.new(|cx| PipelinePanel::new(state.clone(), window, cx));
             self.counter_panel = cx.new(|cx| CounterPanel::new(state.clone(), cx));
             self.minimap_view = cx.new(|cx| MinimapView::new(state.clone(), cx));
-            // Preserve queue panel visibility across rebuilds.
-            let queue_visible = self
+            // Preserve dock panel visibility across rebuilds.
+            let dock_visible = self
                 .dock_area
                 .read(cx)
                 .is_dock_open(self.queue_placement, cx);
-            self.retire_queue_tab =
-                cx.new(|cx| QueuePanel::new(state.clone(), QueueKind::Retire, cx));
-            self.dispatch_queue_tab =
-                cx.new(|cx| QueuePanel::new(state.clone(), QueueKind::Dispatch, cx));
-            self.issue_queue_tab =
-                cx.new(|cx| QueuePanel::new(state.clone(), QueueKind::Issue, cx));
+            // Create one BufferPanel per buffer in the trace.
+            let num_buffers = state.read(cx).trace.buffers.len();
+            self.buffer_panels = (0..num_buffers)
+                .map(|i| cx.new(|cx| BufferPanel::new(state.clone(), i, cx)))
+                .collect();
             self.log_panel = cx.new(|cx| LogPanel::new(self.log_buffer.clone(), cx));
             self.dock_area = Self::build_dock_area(
                 &self.pipeline_panel,
                 &self.counter_panel,
-                &self.retire_queue_tab,
-                &self.dispatch_queue_tab,
-                &self.issue_queue_tab,
+                &self.buffer_panels,
                 &self.log_panel,
                 self.queue_placement,
-                queue_visible,
+                dock_visible,
                 window,
                 cx,
             );
@@ -981,19 +977,15 @@ impl AppView {
             self.pipeline_panel = cx.new(|cx| PipelinePanel::new(state.clone(), window, cx));
             self.counter_panel = cx.new(|cx| CounterPanel::new(state.clone(), cx));
             self.minimap_view = cx.new(|cx| MinimapView::new(state.clone(), cx));
-            self.retire_queue_tab =
-                cx.new(|cx| QueuePanel::new(state.clone(), QueueKind::Retire, cx));
-            self.dispatch_queue_tab =
-                cx.new(|cx| QueuePanel::new(state.clone(), QueueKind::Dispatch, cx));
-            self.issue_queue_tab =
-                cx.new(|cx| QueuePanel::new(state.clone(), QueueKind::Issue, cx));
+            let num_buffers = state.read(cx).trace.buffers.len();
+            self.buffer_panels = (0..num_buffers)
+                .map(|i| cx.new(|cx| BufferPanel::new(state.clone(), i, cx)))
+                .collect();
             self.log_panel = cx.new(|cx| LogPanel::new(self.log_buffer.clone(), cx));
             self.dock_area = Self::build_dock_area(
                 &self.pipeline_panel,
                 &self.counter_panel,
-                &self.retire_queue_tab,
-                &self.dispatch_queue_tab,
-                &self.issue_queue_tab,
+                &self.buffer_panels,
                 &self.log_panel,
                 self.queue_placement,
                 true, // always open when actively switching layout
