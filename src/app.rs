@@ -69,16 +69,23 @@ pub struct Cursor {
 /// Maximum cursor history entries.
 const CURSOR_HISTORY_MAX: usize = 100;
 
+/// Snapshot of all cursors for undo/redo.
+#[derive(Clone)]
+struct CursorSnapshot {
+    cursors: Vec<Cursor>,
+    active_idx: usize,
+}
+
 /// State for multicursor support.
 #[derive(Clone)]
 pub struct CursorState {
     pub cursors: Vec<Cursor>,
     pub active_idx: usize,
     next_color: usize,
-    /// Cursor position history for undo (past positions).
-    history_back: Vec<f64>,
-    /// Cursor position history for redo (undone positions).
-    history_forward: Vec<f64>,
+    /// Full cursor state history for undo.
+    history_back: Vec<CursorSnapshot>,
+    /// Full cursor state history for redo.
+    history_forward: Vec<CursorSnapshot>,
 }
 
 impl CursorState {
@@ -95,46 +102,57 @@ impl CursorState {
         }
     }
 
+    /// Save current state to undo history before making a change.
+    fn push_history(&mut self) {
+        self.history_back.push(CursorSnapshot {
+            cursors: self.cursors.clone(),
+            active_idx: self.active_idx,
+        });
+        if self.history_back.len() > CURSOR_HISTORY_MAX {
+            self.history_back.remove(0);
+        }
+        self.history_forward.clear();
+    }
+
     /// Move the active cursor to a new cycle, recording history for undo.
     pub fn move_cursor(&mut self, cycle: f64) {
         if let Some(cursor) = self.cursors.get(self.active_idx) {
-            // Don't record if position hasn't changed significantly.
             if (cursor.cycle - cycle).abs() < 0.5 {
                 return;
             }
-            self.history_back.push(cursor.cycle);
-            if self.history_back.len() > CURSOR_HISTORY_MAX {
-                self.history_back.remove(0);
-            }
-            // Clear forward history on new movement.
-            self.history_forward.clear();
         }
+        self.push_history();
         if let Some(cursor) = self.cursors.get_mut(self.active_idx) {
             cursor.cycle = cycle;
         }
     }
 
-    /// Undo: restore previous cursor position.
+    /// Undo: restore previous full cursor state.
     pub fn undo(&mut self) {
-        if let Some(prev_cycle) = self.history_back.pop() {
-            if let Some(cursor) = self.cursors.get_mut(self.active_idx) {
-                self.history_forward.push(cursor.cycle);
-                cursor.cycle = prev_cycle;
-            }
+        if let Some(snapshot) = self.history_back.pop() {
+            self.history_forward.push(CursorSnapshot {
+                cursors: self.cursors.clone(),
+                active_idx: self.active_idx,
+            });
+            self.cursors = snapshot.cursors;
+            self.active_idx = snapshot.active_idx;
         }
     }
 
-    /// Redo: restore undone cursor position.
+    /// Redo: restore undone full cursor state.
     pub fn redo(&mut self) {
-        if let Some(next_cycle) = self.history_forward.pop() {
-            if let Some(cursor) = self.cursors.get_mut(self.active_idx) {
-                self.history_back.push(cursor.cycle);
-                cursor.cycle = next_cycle;
-            }
+        if let Some(snapshot) = self.history_forward.pop() {
+            self.history_back.push(CursorSnapshot {
+                cursors: self.cursors.clone(),
+                active_idx: self.active_idx,
+            });
+            self.cursors = snapshot.cursors;
+            self.active_idx = snapshot.active_idx;
         }
     }
 
     pub fn add_cursor(&mut self, cycle: f64) {
+        self.push_history();
         let color_idx = self.next_color % colors::CURSOR_PALETTE.len();
         self.next_color += 1;
         self.cursors.push(Cursor { cycle, color_idx });
@@ -145,6 +163,7 @@ impl CursorState {
         if self.cursors.len() <= 1 {
             return;
         }
+        self.push_history();
         self.cursors.remove(self.active_idx);
         if self.active_idx >= self.cursors.len() {
             self.active_idx = self.cursors.len() - 1;

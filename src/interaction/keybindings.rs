@@ -34,6 +34,7 @@ pub fn register(cx: &mut App) {
         KeyBinding::new("alt-cmd-3", LayoutRight, None),
         KeyBinding::new("cmd-z", CursorUndo, None),
         KeyBinding::new("cmd-shift-z", CursorRedo, None),
+        KeyBinding::new("cmd-y", CursorRedo, None),
         KeyBinding::new("cmd-shift-o", ToggleOverlay, None),
         KeyBinding::new("alt-cmd-w", WcpConnect, None),
         KeyBinding::new("alt-cmd-shift-w", WcpDisconnect, None),
