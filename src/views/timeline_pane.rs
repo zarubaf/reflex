@@ -266,15 +266,29 @@ impl Render for TimelinePane {
                             // Expand the cycle range to include the cycles of visible rows.
                             let mut load_start = cycle_start;
                             let mut load_end = cycle_end;
+                            let row_count = ts.trace.row_count();
                             if !ts.trace.instructions.is_empty() {
-                                let last_row = row_end.min(ts.trace.row_count().saturating_sub(1));
-                                if row_start < ts.trace.row_count() {
+                                if row_start < row_count {
                                     load_start = load_start
                                         .min(ts.trace.instructions[row_start].first_cycle);
                                 }
-                                if last_row < ts.trace.row_count() {
+                                let last_row = row_end.min(row_count.saturating_sub(1));
+                                if last_row < row_count {
                                     load_end =
                                         load_end.max(ts.trace.instructions[last_row].last_cycle);
+                                }
+                                // If scrolled past loaded rows, extrapolate cycle range.
+                                if row_end > row_count && row_count > 1 {
+                                    let last_instr = &ts.trace.instructions[row_count - 1];
+                                    let extra_rows = row_end - row_count;
+                                    // Estimate cycles per row from loaded data.
+                                    let avg_cycles_per_row =
+                                        last_instr.last_cycle as f64 / row_count as f64;
+                                    let extra_cycles =
+                                        (extra_rows as f64 * avg_cycles_per_row) as u32;
+                                    load_end = load_end
+                                        .max(last_instr.last_cycle.saturating_add(extra_cycles))
+                                        .min(ts.viewport.max_cycle);
                                 }
                             }
                             ts.ensure_segments_loaded(load_start, load_end);
