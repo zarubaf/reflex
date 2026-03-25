@@ -146,6 +146,21 @@ impl Render for TimelinePane {
                 },
             )
             .on_mouse_move(move |event: &MouseMoveEvent, _window, cx| {
+                // If the mouse button was released outside the element,
+                // on_mouse_up never fired. Clear stale drag state.
+                if event.pressed_button.is_none() {
+                    entity_for_move.update(cx, |pane: &mut TimelinePane, _cx| {
+                        if pane.dragging || pane.dragging_cursor.is_some() {
+                            pane.dragging = false;
+                            pane.dragging_cursor = None;
+                            pane.did_drag = false;
+                            pane.last_mouse = None;
+                            pane.click_start = None;
+                        }
+                    });
+                    return;
+                }
+
                 let mut drag_delta = None;
                 let mut cursor_drag_idx = None;
                 entity_for_move.update(cx, |pane: &mut TimelinePane, _cx| {
