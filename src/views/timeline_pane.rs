@@ -257,6 +257,9 @@ impl Render for TimelinePane {
                     move |bounds, _bounds_data, window, cx| {
                         state.update(cx, |ts, _cx| {
                             ts.record_frame();
+                            // Lazy segment loading: ensure visible segments are loaded.
+                            let (start, end) = ts.viewport.visible_cycle_range();
+                            ts.ensure_segments_loaded(start, end);
                         });
                         let (viewport, selected_row, trace, cursor_state, overlay_counter) = {
                             let ts = state.read(cx);

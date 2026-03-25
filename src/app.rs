@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -204,11 +204,16 @@ pub struct TraceState {
     /// FPS tracking.
     pub frame_times: VecDeque<Instant>,
     pub fps: f64,
-    /// uscope reader kept alive for on-demand queries in future lazy-loading phases.
+    /// uscope reader kept alive for on-demand segment loading.
     /// `None` for generator-produced traces.
     pub reader: Option<Reader>,
     /// Segment-to-cycle index for fast lookup of which segments cover a cycle range.
     pub segment_index: SegmentIndex,
+    /// Context needed for on-demand segment loading (protocol IDs, decoder, etc.).
+    /// `None` for generator-produced traces.
+    pub uscope_ctx: Option<crate::trace::uscope_source::UscopeContext>,
+    /// Set of segment indices whose instructions have been loaded into the trace.
+    pub loaded_segments: HashSet<usize>,
 }
 
 impl TraceState {
@@ -225,6 +230,8 @@ impl TraceState {
             fps: 0.0,
             reader: None,
             segment_index: SegmentIndex::default(),
+            uscope_ctx: None,
+            loaded_segments: HashSet::new(),
         }
     }
 
@@ -247,6 +254,84 @@ impl TraceState {
         self.counter_range = None;
         self.reader = reader;
         self.segment_index = segment_index;
+        self.uscope_ctx = None;
+        self.loaded_segments.clear();
+    }
+
+    /// Load a trace in lazy mode: metadata + counters are loaded, but
+    /// instructions are loaded on demand as the viewport scrolls.
+    pub fn load_trace_lazy(
+        &mut self,
+        trace: PipelineTrace,
+        reader: Reader,
+        segment_index: SegmentIndex,
+        uscope_ctx: crate::trace::uscope_source::UscopeContext,
+    ) {
+        self.viewport.max_cycle = trace.max_cycle();
+        // max_row starts at 0 — will grow as segments are loaded.
+        self.viewport.max_row = 0;
+        self.viewport.clamp();
+        self.trace = Arc::new(trace);
+        self.reader = Some(reader);
+        self.segment_index = segment_index;
+        self.uscope_ctx = Some(uscope_ctx);
+        self.loaded_segments.clear();
+    }
+
+    /// Ensure that all segments covering the given cycle range have their
+    /// instructions loaded. Call this before rendering the viewport.
+    ///
+    /// Returns `true` if new segments were loaded (trace data changed).
+    pub fn ensure_segments_loaded(&mut self, start_cycle: u32, end_cycle: u32) -> bool {
+        // Only applies to lazy-loaded uscope traces.
+        if self.uscope_ctx.is_none() {
+            return false;
+        }
+
+        // Add a buffer zone: 50% of the visible range on each side.
+        let range_width = end_cycle.saturating_sub(start_cycle);
+        let buffer = range_width / 2;
+        let buffered_start = start_cycle.saturating_sub(buffer);
+        let buffered_end = end_cycle
+            .saturating_add(buffer)
+            .min(self.viewport.max_cycle);
+
+        let needed = self
+            .segment_index
+            .segments_in_range(buffered_start, buffered_end);
+        let unloaded: Vec<usize> = needed
+            .into_iter()
+            .filter(|idx| !self.loaded_segments.contains(idx))
+            .collect();
+
+        if unloaded.is_empty() {
+            return false;
+        }
+
+        // Load the segments.
+        let ctx = self.uscope_ctx.as_ref().unwrap();
+        let reader = self.reader.as_mut().unwrap();
+        match crate::trace::uscope_source::load_segments(reader, ctx, &unloaded) {
+            Ok(result) => {
+                for &idx in &unloaded {
+                    self.loaded_segments.insert(idx);
+                }
+
+                // Clone the trace, merge new data, re-wrap in Arc.
+                let mut trace = (*self.trace).clone();
+                trace.merge_loaded(result.instructions, result.stages, result.dependencies);
+
+                // Update viewport bounds.
+                self.viewport.max_row = trace.row_count();
+
+                self.trace = Arc::new(trace);
+                true
+            }
+            Err(e) => {
+                eprintln!("Error loading segments: {}", e);
+                false
+            }
+        }
     }
 
     /// Record a frame and update FPS.
@@ -588,18 +673,18 @@ impl AppView {
         cx.notify();
     }
 
-    /// Open a trace file in a new tab.
+    /// Open a trace file in a new tab using lazy segment loading.
     fn open_in_new_tab(
         &mut self,
         path: &std::path::Path,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match crate::trace::uscope_source::parse_uscope(path) {
-            Ok((trace, reader, segment_index)) => {
+        match crate::trace::uscope_source::open_uscope(path) {
+            Ok((reader, trace, segment_index, uscope_ctx)) => {
                 let state = cx.new(|_cx| TraceState::new());
                 state.update(cx, |ts, _cx| {
-                    ts.load_trace(trace, Some(reader), segment_index)
+                    ts.load_trace_lazy(trace, reader, segment_index, uscope_ctx)
                 });
                 let id = self.next_tab_id;
                 self.next_tab_id += 1;
@@ -809,14 +894,14 @@ impl AppView {
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = receiver.await {
                 if let Some(path) = paths.first() {
-                    match crate::trace::uscope_source::parse_uscope(path) {
-                        Ok((trace, reader, segment_index)) => {
+                    match crate::trace::uscope_source::open_uscope(path) {
+                        Ok((reader, trace, segment_index, uscope_ctx)) => {
                             let path_str = path.to_string_lossy().into_owned();
                             let _ = cx.update(|cx| {
                                 let _ = this.update(cx, |app, cx| {
                                     let state = cx.new(|_cx| TraceState::new());
                                     state.update(cx, |ts, _cx| {
-                                        ts.load_trace(trace, Some(reader), segment_index)
+                                        ts.load_trace_lazy(trace, reader, segment_index, uscope_ctx)
                                     });
                                     let id = app.next_tab_id;
                                     app.next_tab_id += 1;
@@ -851,12 +936,16 @@ impl AppView {
             return;
         }
         let file_path = self.tabs[self.active_tab].file_path.clone();
-        let (trace, reader, segment_index) = if let Some(ref path) = file_path {
-            match crate::trace::uscope_source::parse_uscope(std::path::Path::new(path)) {
-                Ok((trace, reader, segment_index)) => (trace, Some(reader), segment_index),
+        if let Some(ref path) = file_path {
+            match crate::trace::uscope_source::open_uscope(std::path::Path::new(path)) {
+                Ok((reader, trace, segment_index, uscope_ctx)) => {
+                    self.with_active_state(cx, |ts, cx| {
+                        ts.load_trace_lazy(trace, reader, segment_index, uscope_ctx);
+                        cx.notify();
+                    });
+                }
                 Err(e) => {
                     eprintln!("Error reloading trace: {}", e);
-                    return;
                 }
             }
         } else {
@@ -864,12 +953,11 @@ impl AppView {
                 instruction_count: 10_000,
                 ..Default::default()
             });
-            (trace, None, SegmentIndex::default())
-        };
-        self.with_active_state(cx, |ts, cx| {
-            ts.load_trace(trace, reader, segment_index);
-            cx.notify();
-        });
+            self.with_active_state(cx, |ts, cx| {
+                ts.load_trace(trace, None, SegmentIndex::default());
+                cx.notify();
+            });
+        }
     }
 
     fn handle_close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
