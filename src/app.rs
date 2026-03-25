@@ -13,7 +13,7 @@ use crate::interaction::viewport::ViewportState;
 use crate::theme::colors;
 use crate::title_bar::render_title_bar;
 use crate::trace::generator::{self, GeneratorConfig};
-use crate::trace::model::PipelineTrace;
+use crate::trace::model::{PipelineTrace, SegmentIndex};
 use crate::views::buffer_panel::BufferPanel;
 use crate::views::counter_panel::CounterPanel;
 use crate::views::goto_bar::GotoBar;
@@ -25,6 +25,7 @@ use crate::views::pipeline_panel::PipelinePanel;
 use crate::views::search_bar::SearchBar;
 use crate::views::status_bar::StatusBar;
 use crate::wcp::WcpClient;
+use uscope::reader::Reader;
 
 /// Decode percent-encoded characters in a URL path (e.g. `%20` → ` `).
 fn percent_decode(input: &str) -> String {
@@ -203,6 +204,11 @@ pub struct TraceState {
     /// FPS tracking.
     pub frame_times: VecDeque<Instant>,
     pub fps: f64,
+    /// uscope reader kept alive for on-demand queries in future lazy-loading phases.
+    /// `None` for generator-produced traces.
+    pub reader: Option<Reader>,
+    /// Segment-to-cycle index for fast lookup of which segments cover a cycle range.
+    pub segment_index: SegmentIndex,
 }
 
 impl TraceState {
@@ -217,6 +223,8 @@ impl TraceState {
             counter_range: None,
             frame_times: VecDeque::new(),
             fps: 0.0,
+            reader: None,
+            segment_index: SegmentIndex::default(),
         }
     }
 
@@ -225,11 +233,18 @@ impl TraceState {
         self.counter_range.unwrap_or((0, self.trace.max_cycle()))
     }
 
-    pub fn load_trace(&mut self, trace: PipelineTrace) {
+    pub fn load_trace(
+        &mut self,
+        trace: PipelineTrace,
+        reader: Option<Reader>,
+        segment_index: SegmentIndex,
+    ) {
         self.viewport.max_cycle = trace.max_cycle();
         self.viewport.max_row = trace.row_count();
         self.viewport.clamp();
         self.trace = Arc::new(trace);
+        self.reader = reader;
+        self.segment_index = segment_index;
     }
 
     /// Record a frame and update FPS.
@@ -579,9 +594,11 @@ impl AppView {
         cx: &mut Context<Self>,
     ) {
         match crate::trace::uscope_source::parse_uscope(path) {
-            Ok(trace) => {
+            Ok((trace, reader, segment_index)) => {
                 let state = cx.new(|_cx| TraceState::new());
-                state.update(cx, |ts, _cx| ts.load_trace(trace));
+                state.update(cx, |ts, _cx| {
+                    ts.load_trace(trace, Some(reader), segment_index)
+                });
                 let id = self.next_tab_id;
                 self.next_tab_id += 1;
                 self.tabs.push(TabEntry {
@@ -765,7 +782,9 @@ impl AppView {
             ..Default::default()
         });
         let state = cx.new(|_cx| TraceState::new());
-        state.update(cx, |ts, _cx| ts.load_trace(trace));
+        state.update(cx, |ts, _cx| {
+            ts.load_trace(trace, None, SegmentIndex::default())
+        });
         let id = self.next_tab_id;
         self.next_tab_id += 1;
         self.tabs.push(TabEntry {
@@ -789,12 +808,14 @@ impl AppView {
             if let Ok(Ok(Some(paths))) = receiver.await {
                 if let Some(path) = paths.first() {
                     match crate::trace::uscope_source::parse_uscope(path) {
-                        Ok(trace) => {
+                        Ok((trace, reader, segment_index)) => {
                             let path_str = path.to_string_lossy().into_owned();
                             let _ = cx.update(|cx| {
                                 let _ = this.update(cx, |app, cx| {
                                     let state = cx.new(|_cx| TraceState::new());
-                                    state.update(cx, |ts, _cx| ts.load_trace(trace));
+                                    state.update(cx, |ts, _cx| {
+                                        ts.load_trace(trace, Some(reader), segment_index)
+                                    });
                                     let id = app.next_tab_id;
                                     app.next_tab_id += 1;
                                     app.tabs.push(TabEntry {
@@ -828,22 +849,23 @@ impl AppView {
             return;
         }
         let file_path = self.tabs[self.active_tab].file_path.clone();
-        let trace = if let Some(ref path) = file_path {
+        let (trace, reader, segment_index) = if let Some(ref path) = file_path {
             match crate::trace::uscope_source::parse_uscope(std::path::Path::new(path)) {
-                Ok(trace) => trace,
+                Ok((trace, reader, segment_index)) => (trace, Some(reader), segment_index),
                 Err(e) => {
                     eprintln!("Error reloading trace: {}", e);
                     return;
                 }
             }
         } else {
-            generator::generate(&GeneratorConfig {
+            let trace = generator::generate(&GeneratorConfig {
                 instruction_count: 10_000,
                 ..Default::default()
-            })
+            });
+            (trace, None, SegmentIndex::default())
         };
         self.with_active_state(cx, |ts, cx| {
-            ts.load_trace(trace);
+            ts.load_trace(trace, reader, segment_index);
             cx.notify();
         });
     }
