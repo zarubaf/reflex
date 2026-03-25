@@ -20,10 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install mdbook
-        run: |
-          mkdir -p "$HOME/.local/bin"
-          curl -sSL https://github.com/rust-lang/mdBook/releases/latest/download/mdbook-v0.4.44-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C "$HOME/.local/bin"
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
+        uses: taiki-e/install-action@mdbook
       - name: Build docs
         run: mdbook build docs/
       - name: Upload artifact
