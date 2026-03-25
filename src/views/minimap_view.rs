@@ -584,14 +584,11 @@ impl Render for MinimapView {
                                 ts.viewport.view_width as f64 / ts.viewport.pixels_per_cycle as f64;
                             let new_scroll = clicked_cycle - view_cycles / 2.0;
                             state.update(cx, |ts, cx| {
-                                // Center pipeline viewport.
+                                // Center pipeline viewport on clicked cycle.
+                                // Don't move the cursor — cursor only moves
+                                // when clicking inside the trace window.
                                 ts.viewport.scroll_cycle = new_scroll.max(0.0);
                                 ts.viewport.clamp();
-                                // Set cursor to clicked position.
-                                let active = ts.cursor_state.active_idx;
-                                if active < ts.cursor_state.cursors.len() {
-                                    ts.cursor_state.cursors[active].cycle = clicked_cycle;
-                                }
                                 cx.notify();
                             });
                         }
