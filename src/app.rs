@@ -131,6 +131,9 @@ pub struct TraceState {
     pub cursor_state: CursorState,
     /// Counter index to show as overlay on the pipeline timeline. None = no overlay.
     pub overlay_counter: Option<usize>,
+    /// Counter panel cycle range (independent from pipeline viewport).
+    /// `None` = full trace. `Some((start, end))` = selected range.
+    pub counter_range: Option<(u32, u32)>,
     /// FPS tracking.
     pub frame_times: VecDeque<Instant>,
     pub fps: f64,
@@ -145,9 +148,15 @@ impl TraceState {
             tooltip_hover: None,
             cursor_state: CursorState::new(),
             overlay_counter: None,
+            counter_range: None,
             frame_times: VecDeque::new(),
             fps: 0.0,
         }
+    }
+
+    /// Get the effective counter display range (defaults to full trace).
+    pub fn effective_counter_range(&self) -> (u32, u32) {
+        self.counter_range.unwrap_or((0, self.trace.max_cycle()))
     }
 
     pub fn load_trace(&mut self, trace: PipelineTrace) {
