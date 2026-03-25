@@ -52,6 +52,7 @@ enum MinimapDrag {
     Pan {
         start_mouse_x: f32,
         start_scroll: f64,
+        range_width: f64,
     },
     ResizeLeft,
     ResizeRight,
@@ -458,6 +459,7 @@ impl Render for MinimapView {
                             this.drag_state = Some(MinimapDrag::Pan {
                                 start_mouse_x: local_x,
                                 start_scroll: cr_start_f,
+                                range_width: cr_end as f64 - cr_start_f,
                             });
                         } else {
                             // Click outside counter range: jump pipeline viewport
@@ -502,15 +504,14 @@ impl Render for MinimapView {
                         MinimapDrag::Pan {
                             start_mouse_x,
                             start_scroll,
+                            range_width,
                         } => {
                             let start_cycle =
                                 (start_mouse_x as f64 / canvas_width as f64) * max_cycle as f64;
                             let dx = mouse_cycle - start_cycle;
-                            let (_, cr_end) = ts.effective_counter_range();
-                            let cr_width = cr_end as f64 - start_scroll;
-                            let max_start = (max_cycle as f64 - cr_width).max(0.0);
+                            let max_start = (max_cycle as f64 - range_width).max(0.0);
                             let new_start = (start_scroll + dx).clamp(0.0, max_start);
-                            let new_end = (new_start + cr_width).min(max_cycle as f64);
+                            let new_end = (new_start + range_width).min(max_cycle as f64);
                             state.update(cx, |ts, cx| {
                                 ts.counter_range = Some((new_start as u32, new_end as u32));
                                 cx.notify();
