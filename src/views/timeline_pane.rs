@@ -310,6 +310,7 @@ impl gpui_component::dock::Panel for TimelinePane {
 /// Height of the counter overlay strip in pixels.
 const OVERLAY_HEIGHT: f32 = 30.0;
 
+#[allow(clippy::too_many_arguments)]
 fn paint_timeline(
     bounds: Bounds<Pixels>,
     trace: &crate::trace::model::PipelineTrace,

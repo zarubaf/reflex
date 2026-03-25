@@ -445,6 +445,7 @@ impl AppView {
     }
 
     /// Build a DockArea with the pipeline panel in the center and queue tabs at the given placement.
+    #[allow(clippy::too_many_arguments)]
     fn build_dock_area(
         pipeline_panel: &Entity<PipelinePanel>,
         counter_panel: &Entity<CounterPanel>,
