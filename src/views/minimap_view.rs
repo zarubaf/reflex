@@ -456,14 +456,17 @@ impl Render for MinimapView {
                         } else if near_right {
                             this.drag_state = Some(MinimapDrag::ResizeRight);
                         } else if inside {
+                            // Pan counter range AND jump pipeline viewport.
                             this.drag_state = Some(MinimapDrag::Pan {
                                 start_mouse_x: local_x,
                                 start_scroll: cr_start_f,
                                 range_width: cr_end as f64 - cr_start_f,
                             });
-                        } else {
-                            // Click outside counter range: jump pipeline viewport
-                            // to center on clicked position.
+                        }
+
+                        // Always jump pipeline viewport to clicked position
+                        // (regardless of whether inside or outside counter range).
+                        if !near_left && !near_right {
                             let clicked_cycle = this.pixel_to_cycle(local_x, max_cycle);
                             let ts = state.read(cx);
                             let view_cycles =
@@ -486,6 +489,13 @@ impl Render for MinimapView {
                     let Some(drag) = drag else {
                         return;
                     };
+
+                    // If the mouse button was released outside the minimap,
+                    // on_mouse_up never fired. Detect and clear stale drag.
+                    if ev.pressed_button.is_none() {
+                        entity.update(cx, |v, _| v.drag_state = None);
+                        return;
+                    }
 
                     let (local_x, canvas_width) = {
                         let v = entity.read(cx);
