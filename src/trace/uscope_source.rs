@@ -482,9 +482,8 @@ pub fn open_uscope(
         segments: Vec::with_capacity(num_segments),
     };
 
-    // Replay all segments but ONLY process counters — skip instruction building.
-    // Instead of building dense per-cycle arrays, store one sparse sample per
-    // segment boundary (the cumulative value at the end of each segment).
+    // Replay all segments: process counters and count total instructions.
+    let mut total_instruction_count: usize = 0;
     for seg_idx in 0..num_segments {
         let (_storages, items) = reader.segment_replay(seg_idx).map_err(TraceError::Io)?;
 
@@ -500,8 +499,15 @@ pub fn open_uscope(
             if item_cycle > seg_max_cycle {
                 seg_max_cycle = item_cycle;
             }
-            // Only process counter ops — skip everything else.
             if let TimedItem::Op(op) = item {
+                // Count entity creations (new instructions).
+                if op.storage_id == ids.entities_storage_id
+                    && op.action == DA_SLOT_SET
+                    && op.field_index == ids.field_entity_id
+                {
+                    total_instruction_count += 1;
+                }
+                // Process counter ops.
                 if let Some(&counter_idx) = counter_storage_map.get(&op.storage_id) {
                     if op.action == DA_SLOT_ADD {
                         counter_accum[counter_idx] =
@@ -537,6 +543,7 @@ pub fn open_uscope(
     }
     trace.counters = counter_series;
     trace.buffers = buffer_infos;
+    trace.total_instruction_count = total_instruction_count;
 
     // Set max_cycle from header total_time_ps (covers all segments).
     trace.max_cycle_override = Some((reader.header().total_time_ps / ids.period_ps) as u32);

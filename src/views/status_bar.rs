@@ -4,6 +4,19 @@ use gpui::*;
 use crate::app::TraceState;
 use crate::theme::colors;
 
+/// Format a number with apostrophe thousand separators (e.g., 1'000'000).
+pub fn fmt_num(n: impl std::fmt::Display) -> String {
+    let s = n.to_string();
+    let mut result = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            result.push('\'');
+        }
+        result.push(c);
+    }
+    result.chars().rev().collect()
+}
+
 /// Bottom status bar showing cycle, row, zoom, FPS info.
 pub struct StatusBar {
     state: Entity<TraceState>,
@@ -24,20 +37,32 @@ impl Render for StatusBar {
         let ts = self.state.read(cx);
         let vp = &ts.viewport;
 
-        let total = format!(
-            "{} instrs, {} max cycle",
-            ts.trace.row_count(),
-            ts.trace.max_cycle()
-        );
+        let loaded = ts.trace.row_count();
+        let total_instrs = ts.trace.total_instruction_count;
+        let total = if total_instrs > 0 && loaded < total_instrs {
+            format!(
+                "{}/{} instrs, {} max cycle",
+                fmt_num(loaded),
+                fmt_num(total_instrs),
+                fmt_num(ts.trace.max_cycle())
+            )
+        } else {
+            format!(
+                "{} instrs, {} max cycle",
+                fmt_num(loaded),
+                fmt_num(ts.trace.max_cycle())
+            )
+        };
 
+        let vis_end = (vp.scroll_cycle + vp.view_width as f64 / vp.pixels_per_cycle as f64) as u64;
         let cycle_info = format!(
-            "Cycles: {:.0}-{:.0}",
-            vp.scroll_cycle,
-            vp.scroll_cycle + vp.view_width as f64 / vp.pixels_per_cycle as f64
+            "Cycles: {}-{}",
+            fmt_num(vp.scroll_cycle as u64),
+            fmt_num(vis_end)
         );
 
         let (row_start, row_end) = vp.visible_row_range();
-        let row_info = format!("Rows: {}-{}", row_start, row_end);
+        let row_info = format!("Rows: {}-{}", fmt_num(row_start), fmt_num(row_end));
         let zoom_info = format!(
             "Zoom: {:.1}px/cyc, {:.1}px/row",
             vp.pixels_per_cycle, vp.row_height
@@ -59,13 +84,13 @@ impl Render for StatusBar {
             let active = &ts.cursor_state.cursors[ts.cursor_state.active_idx];
             if ts.cursor_state.cursors.len() > 1 {
                 format!(
-                    "Cursor: {:.0} [{}/{}]",
-                    active.cycle,
+                    "Cursor: {} [{}/{}]",
+                    fmt_num(active.cycle as u64),
                     ts.cursor_state.active_idx + 1,
                     ts.cursor_state.cursors.len()
                 )
             } else {
-                format!("Cursor: {:.0}", active.cycle)
+                format!("Cursor: {}", fmt_num(active.cycle as u64))
             }
         } else {
             String::new()
