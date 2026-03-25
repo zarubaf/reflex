@@ -279,14 +279,27 @@ impl Render for TimelinePane {
                             }
                             ts.ensure_segments_loaded(load_start, load_end);
                         });
-                        let (viewport, selected_row, trace, cursor_state, overlay_counter) = {
+                        let (viewport, selected_row, trace, cursor_state, overlay_data) = {
                             let ts = state.read(cx);
+                            // Pre-compute overlay data using mipmap if available.
+                            let overlay = ts.overlay_counter.and_then(|ci| {
+                                if ci >= ts.trace.counters.len() {
+                                    return None;
+                                }
+                                let (vs, ve) = ts.viewport.visible_cycle_range();
+                                if ve <= vs {
+                                    return None;
+                                }
+                                let cr = (ve - vs) as usize;
+                                let bc = (px_val(bounds.size.width) as usize).min(cr).max(1);
+                                Some(ts.counter_downsample(ci, vs, ve, bc))
+                            });
                             (
                                 ts.viewport.clone(),
                                 ts.selected_row,
                                 Arc::clone(&ts.trace),
                                 ts.cursor_state.clone(),
-                                ts.overlay_counter,
+                                overlay,
                             )
                         };
                         paint_timeline(
@@ -295,7 +308,7 @@ impl Render for TimelinePane {
                             &viewport,
                             selected_row,
                             &cursor_state,
-                            overlay_counter,
+                            overlay_data,
                             hdr_h,
                             window,
                             cx,
@@ -340,7 +353,7 @@ fn paint_timeline(
     vp: &crate::interaction::viewport::ViewportState,
     selected_row: Option<usize>,
     cursor_state: &CursorState,
-    overlay_counter: Option<usize>,
+    overlay_data: Option<Vec<(u64, u64)>>,
     hdr_h: f32,
     window: &mut Window,
     cx: &mut App,
@@ -348,10 +361,11 @@ fn paint_timeline(
     let canvas_w = px_val(bounds.size.width);
     let canvas_h = px_val(bounds.size.height);
 
-    // Overlay height (only if a counter is selected and exists).
-    let overlay_h = match overlay_counter {
-        Some(idx) if idx < trace.counters.len() => OVERLAY_HEIGHT,
-        _ => 0.0,
+    // Overlay height (only if pre-computed overlay data exists).
+    let overlay_h = if overlay_data.is_some() {
+        OVERLAY_HEIGHT
+    } else {
+        0.0
     };
 
     // Content area starts below the header + overlay.
@@ -478,8 +492,8 @@ fn paint_timeline(
     }
 
     // ─── Counter overlay strip (between header and pipeline content) ────
-    if let Some(counter_idx) = overlay_counter {
-        if counter_idx < trace.counters.len() {
+    if let Some(ref data) = overlay_data {
+        {
             let overlay_origin = Point {
                 x: bounds.origin.x,
                 y: bounds.origin.y + px(hdr_h),
@@ -509,13 +523,8 @@ fn paint_timeline(
                 colors::GRID_LINE,
             ));
 
-            // Paint downsampled counter data as filled bars.
-            let (vis_start, vis_end) = vp.visible_cycle_range();
-            if vis_end > vis_start {
-                let cycle_range = (vis_end - vis_start) as usize;
-                let bucket_count = (canvas_w as usize).min(cycle_range).max(1);
-                let data =
-                    trace.counter_downsample_minmax(counter_idx, vis_start, vis_end, bucket_count);
+            // Paint pre-computed counter data as filled bars.
+            if !data.is_empty() {
                 let global_max = data.iter().map(|(_, mx)| *mx).max().unwrap_or(1).max(1);
                 let n = data.len() as f32;
                 let bar_w = (canvas_w / n).ceil().max(1.0);

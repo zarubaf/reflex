@@ -244,12 +244,8 @@ impl Render for CounterPanel {
                                 // Cap buckets at cycle range to avoid sparse bars
                                 let cycle_range = (vis_end - vis_start) as usize;
                                 let bucket_count = (width as usize).min(cycle_range).max(1);
-                                let data = ts.trace.counter_downsample_minmax(
-                                    idx,
-                                    vis_start,
-                                    vis_end,
-                                    bucket_count,
-                                );
+                                let data =
+                                    ts.counter_downsample(idx, vis_start, vis_end, bucket_count);
                                 let global_max =
                                     data.iter().map(|(_, mx)| *mx).max().unwrap_or(1).max(1);
 
@@ -379,12 +375,8 @@ impl Render for CounterPanel {
                             .iter()
                             .enumerate()
                             .map(|(ci, c)| {
-                                let data = ts.trace.counter_downsample_minmax(
-                                    ci,
-                                    vis_start,
-                                    vis_end,
-                                    bucket_count,
-                                );
+                                let data =
+                                    ts.counter_downsample(ci, vis_start, vis_end, bucket_count);
                                 let local_max =
                                     data.iter().map(|(_, mx)| *mx).max().unwrap_or(1).max(1);
                                 (data, local_max, c.name.clone())
