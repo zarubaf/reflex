@@ -371,44 +371,48 @@ impl Render for MinimapView {
                                     border_style: BorderStyle::default(),
                                 });
 
-                                // 5. Pipeline viewport indicator (subtle, read-only)
+                                // 5. Pipeline viewport indicator (yellow bar at bottom)
                                 let pvp = &ts.viewport;
                                 let (pv_start, pv_end) = pvp.visible_cycle_range();
                                 let pv_left = ((pv_start as f64 / max_cycle as f64) as f32 * width)
                                     .clamp(0.0, width);
                                 let pv_right = ((pv_end as f64 / max_cycle as f64) as f32 * width)
                                     .clamp(0.0, width);
-                                let pv_width = (pv_right - pv_left).max(2.0).min(width - pv_left);
-                                // Subtle highlighted bar at the bottom of the minimap
-                                window.paint_quad(fill(
-                                    Bounds::new(
+                                let pv_width = (pv_right - pv_left).max(4.0).min(width - pv_left);
+                                let indicator_h = 4.0;
+                                window.paint_quad(PaintQuad {
+                                    bounds: Bounds::new(
                                         point(
                                             bounds.origin.x + px(pv_left),
-                                            bounds.origin.y + px(height - 3.0),
+                                            bounds.origin.y + px(height - indicator_h),
                                         ),
-                                        size(px(pv_width), px(3.0)),
+                                        size(px(pv_width), px(indicator_h)),
                                     ),
-                                    Hsla {
+                                    corner_radii: Corners::all(px(2.0)),
+                                    background: Hsla {
                                         h: 40.0 / 360.0,
-                                        s: 0.7,
+                                        s: 0.8,
                                         l: 0.55,
-                                        a: 0.8,
-                                    },
-                                ));
+                                        a: 0.9,
+                                    }
+                                    .into(),
+                                    border_widths: Edges::default(),
+                                    border_color: gpui::transparent_black(),
+                                    border_style: BorderStyle::default(),
+                                });
 
-                                // 6. Cursor marker (handles are rendered as div children)
-                                let active_cursor =
-                                    &ts.cursor_state.cursors[ts.cursor_state.active_idx];
-                                let cursor_x =
-                                    (active_cursor.cycle / max_cycle as f64) as f32 * width;
-                                let cursor_color = colors::cursor_color(active_cursor.color_idx);
-                                window.paint_quad(fill(
-                                    Bounds::new(
-                                        point(bounds.origin.x + px(cursor_x), bounds.origin.y),
-                                        size(px(1.0), px(height)),
-                                    ),
-                                    cursor_color,
-                                ));
+                                // 6. ALL cursor markers (not just active)
+                                for cursor in &ts.cursor_state.cursors {
+                                    let cursor_x = (cursor.cycle / max_cycle as f64) as f32 * width;
+                                    let cursor_color = colors::cursor_color(cursor.color_idx);
+                                    window.paint_quad(fill(
+                                        Bounds::new(
+                                            point(bounds.origin.x + px(cursor_x), bounds.origin.y),
+                                            size(px(1.0), px(height - indicator_h)),
+                                        ),
+                                        cursor_color,
+                                    ));
+                                }
                             }); // end with_content_mask
                         }
                     },
