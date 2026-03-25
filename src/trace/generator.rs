@@ -221,9 +221,9 @@ pub fn generate(config: &GeneratorConfig) -> PipelineTrace {
         fetch_cycle += 1;
     }
 
-    // Generate synthetic performance counters.
+    // Generate synthetic performance counters with sparse samples.
     if config.counter_count > 0 {
-        let max_cycle = trace.max_cycle() as usize;
+        let max_cycle = trace.max_cycle();
         let counter_names = [
             "committed_insns",
             "cycles",
@@ -246,29 +246,46 @@ pub fn generate(config: &GeneratorConfig) -> PipelineTrace {
             "alu_ops",
             "fp_ops",
         ];
+        // Generate ~100 sparse sample points (simulating segment boundaries).
+        let num_samples = 100.min(max_cycle as usize);
+        let step = if num_samples > 0 {
+            max_cycle / num_samples as u32
+        } else {
+            1
+        }
+        .max(1);
+
         for ci in 0..config.counter_count {
             let name = if ci < counter_names.len() {
                 counter_names[ci].to_string()
             } else {
                 format!("counter_{}", ci)
             };
-            // Generate cumulative counter values.
-            // Each counter has a different average rate and burstiness.
             let avg_rate = rng.gen_range(0.1_f64..5.0);
             let burst_prob = rng.gen_range(0.01_f64..0.2);
             let mut cumulative = 0u64;
-            let mut values = Vec::with_capacity(max_cycle + 1);
-            for _ in 0..=max_cycle {
-                if rng.gen_bool(burst_prob.min(1.0)) {
-                    cumulative += rng.gen_range(1..=(avg_rate * 10.0) as u64 + 1);
-                } else if rng.gen_bool((avg_rate / 2.0).min(1.0)) {
-                    cumulative += rng.gen_range(1..=(avg_rate * 2.0) as u64 + 1);
+            let mut samples = Vec::new();
+            let mut cycle = 0u32;
+            while cycle <= max_cycle {
+                // Simulate counter accumulation over `step` cycles.
+                let cycles_in_step = step.min(max_cycle.saturating_sub(cycle));
+                for _ in 0..cycles_in_step {
+                    if rng.gen_bool(burst_prob.min(1.0)) {
+                        cumulative += rng.gen_range(1..=(avg_rate * 10.0) as u64 + 1);
+                    } else if rng.gen_bool((avg_rate / 2.0).min(1.0)) {
+                        cumulative += rng.gen_range(1..=(avg_rate * 2.0) as u64 + 1);
+                    }
                 }
-                values.push(cumulative);
+                samples.push((cycle, cumulative));
+                cycle = cycle.saturating_add(step);
+            }
+            // Ensure we have a sample at max_cycle.
+            if samples.last().map(|(c, _)| *c).unwrap_or(0) < max_cycle {
+                samples.push((max_cycle, cumulative));
             }
             trace.counters.push(CounterSeries {
                 name,
-                values,
+                samples,
                 default_mode: if ci == 0 {
                     CounterDisplayMode::Rate
                 } else {
