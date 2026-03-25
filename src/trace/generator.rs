@@ -20,6 +20,8 @@ pub struct GeneratorConfig {
     pub flush_probability: f64,
     /// Probability that an instruction depends on a recent producer.
     pub dependency_probability: f64,
+    /// Number of synthetic performance counters to generate.
+    pub counter_count: usize,
     pub seed: u64,
 }
 
@@ -43,6 +45,7 @@ impl Default for GeneratorConfig {
             stall_probability: 0.10,
             flush_probability: 0.01,
             dependency_probability: 0.3,
+            counter_count: 0,
             seed: 42,
         }
     }
@@ -216,6 +219,63 @@ pub fn generate(config: &GeneratorConfig) -> PipelineTrace {
 
         i += group_size;
         fetch_cycle += 1;
+    }
+
+    // Generate synthetic performance counters.
+    if config.counter_count > 0 {
+        let max_cycle = trace.max_cycle() as usize;
+        let counter_names = [
+            "committed_insns",
+            "cycles",
+            "retired_insns",
+            "mispredicts",
+            "dcache_misses",
+            "icache_misses",
+            "dtlb_misses",
+            "itlb_misses",
+            "rob_full_stalls",
+            "iq_full_stalls",
+            "dq_full_stalls",
+            "lsq_full_stalls",
+            "fetch_bubbles",
+            "decode_stalls",
+            "br_taken",
+            "br_not_taken",
+            "load_ops",
+            "store_ops",
+            "alu_ops",
+            "fp_ops",
+        ];
+        for ci in 0..config.counter_count {
+            let name = if ci < counter_names.len() {
+                counter_names[ci].to_string()
+            } else {
+                format!("counter_{}", ci)
+            };
+            // Generate cumulative counter values.
+            // Each counter has a different average rate and burstiness.
+            let avg_rate = rng.gen_range(0.1_f64..5.0);
+            let burst_prob = rng.gen_range(0.01_f64..0.2);
+            let mut cumulative = 0u64;
+            let mut values = Vec::with_capacity(max_cycle + 1);
+            for _ in 0..=max_cycle {
+                if rng.gen_bool(burst_prob.min(1.0)) {
+                    cumulative += rng.gen_range(1..=(avg_rate * 10.0) as u64 + 1);
+                } else if rng.gen_bool((avg_rate / 2.0).min(1.0)) {
+                    cumulative += rng.gen_range(1..=(avg_rate * 2.0) as u64 + 1);
+                }
+                values.push(cumulative);
+            }
+            trace.counters.push(CounterSeries {
+                name,
+                values,
+                default_mode: if ci == 0 {
+                    CounterDisplayMode::Rate
+                } else {
+                    CounterDisplayMode::Total
+                },
+            });
+        }
     }
 
     trace
