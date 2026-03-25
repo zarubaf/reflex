@@ -346,23 +346,37 @@ impl TraceState {
         let period_ps = trace.period_ps.unwrap_or(1000);
         self.trace = Arc::new(trace);
         self.reader = Some(reader);
-        // Compute counter mipmaps for fast multi-resolution queries.
+        // Load counter mipmaps: prefer embedded summary from the file,
+        // fall back to computing on the fly.
         if let Some(ref mut rdr) = self.reader {
-            match uscope::summary::compute_counter_summary(rdr, period_ps) {
-                Ok(summary) => {
-                    eprintln!(
-                        "Computed counter mipmaps: {} counters, {} levels",
-                        summary.counters.len(),
-                        summary
-                            .counters
-                            .first()
-                            .map(|c| c.levels.len())
-                            .unwrap_or(0)
-                    );
-                    self.counter_summary = Some(summary);
-                }
-                Err(e) => {
-                    eprintln!("Warning: failed to compute counter mipmaps: {}", e);
+            if let Some(summary) = rdr.counter_summary() {
+                eprintln!(
+                    "Loaded embedded counter mipmaps: {} counters, {} levels",
+                    summary.counters.len(),
+                    summary
+                        .counters
+                        .first()
+                        .map(|c| c.levels.len())
+                        .unwrap_or(0)
+                );
+                self.counter_summary = Some(summary.clone());
+            } else {
+                match uscope::summary::compute_counter_summary(rdr, period_ps) {
+                    Ok(summary) => {
+                        eprintln!(
+                            "Computed counter mipmaps: {} counters, {} levels",
+                            summary.counters.len(),
+                            summary
+                                .counters
+                                .first()
+                                .map(|c| c.levels.len())
+                                .unwrap_or(0)
+                        );
+                        self.counter_summary = Some(summary);
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: failed to compute counter mipmaps: {}", e);
+                    }
                 }
             }
         }
