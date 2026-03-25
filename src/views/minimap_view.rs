@@ -160,20 +160,17 @@ impl Render for MinimapView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.state.clone();
 
-        // Read viewport state to position handles as div elements.
+        // Read counter range for handle positioning (independent from pipeline viewport).
         let ts = self.state.read(cx);
         let max_cycle = ts.trace.max_cycle();
-        let vp = &ts.viewport;
-        let (vis_start, vis_end) = vp.visible_cycle_range();
-        // We don't know canvas width yet (it's determined during layout),
-        // so express handle positions as percentages of the trace.
+        let (cr_start, cr_end) = ts.effective_counter_range();
         let left_pct = if max_cycle > 0 {
-            vis_start as f32 / max_cycle as f32
+            cr_start as f32 / max_cycle as f32
         } else {
             0.0
         };
         let right_pct = if max_cycle > 0 {
-            (vis_end as f32 / max_cycle as f32).min(1.0)
+            (cr_end as f32 / max_cycle as f32).min(1.0)
         } else {
             1.0
         };
@@ -313,19 +310,17 @@ impl Render for MinimapView {
                                     );
                                 }
 
-                                // 2. Compute viewport rectangle (strictly clamped to canvas)
-                                let vp = &ts.viewport;
-                                let (vis_start, vis_end) = vp.visible_cycle_range();
-                                let vp_left = ((vis_start as f64 / max_cycle as f64) as f32
-                                    * width)
+                                // 2. Compute counter range rectangle (independent from pipeline)
+                                let (cr_start, cr_end) = ts.effective_counter_range();
+                                let vp_left = ((cr_start as f64 / max_cycle as f64) as f32 * width)
                                     .clamp(0.0, width);
-                                let vp_right = ((vis_end as f64 / max_cycle as f64) as f32 * width)
+                                let vp_right = ((cr_end as f64 / max_cycle as f64) as f32 * width)
                                     .clamp(0.0, width);
                                 let vp_width = (vp_right - vp_left)
                                     .max(MIN_VIEWPORT_PX)
-                                    .min(width - vp_left); // ensure right edge stays within canvas
+                                    .min(width - vp_left);
 
-                                // 3. Dimmed overlays outside viewport
+                                // 3. Dimmed overlays outside counter range
                                 let dim_color = Hsla {
                                     h: 0.0,
                                     s: 0.0,
@@ -365,7 +360,32 @@ impl Render for MinimapView {
                                     border_style: BorderStyle::default(),
                                 });
 
-                                // 5. Cursor marker (handles are rendered as div children)
+                                // 5. Pipeline viewport indicator (subtle, read-only)
+                                let pvp = &ts.viewport;
+                                let (pv_start, pv_end) = pvp.visible_cycle_range();
+                                let pv_left = ((pv_start as f64 / max_cycle as f64) as f32 * width)
+                                    .clamp(0.0, width);
+                                let pv_right = ((pv_end as f64 / max_cycle as f64) as f32 * width)
+                                    .clamp(0.0, width);
+                                let pv_width = (pv_right - pv_left).max(2.0).min(width - pv_left);
+                                // Subtle highlighted bar at the bottom of the minimap
+                                window.paint_quad(fill(
+                                    Bounds::new(
+                                        point(
+                                            bounds.origin.x + px(pv_left),
+                                            bounds.origin.y + px(height - 3.0),
+                                        ),
+                                        size(px(pv_width), px(3.0)),
+                                    ),
+                                    Hsla {
+                                        h: 40.0 / 360.0,
+                                        s: 0.7,
+                                        l: 0.55,
+                                        a: 0.8,
+                                    },
+                                ));
+
+                                // 6. Cursor marker (handles are rendered as div children)
                                 let active_cursor =
                                     &ts.cursor_state.cursors[ts.cursor_state.active_idx];
                                 let cursor_x =
@@ -418,20 +438,17 @@ impl Render for MinimapView {
                 move |ev: &MouseDownEvent, _window, cx| {
                     let ts = state.read(cx);
                     let max_cycle = ts.trace.max_cycle();
-                    let vp = &ts.viewport;
-                    let (vis_start, vis_end) = vp.visible_cycle_range();
-                    let scroll = vp.scroll_cycle;
-                    let view_w = vp.view_width;
-                    let ppc = vp.pixels_per_cycle;
+                    let (cr_start, cr_end) = ts.effective_counter_range();
+                    let cr_start_f = cr_start as f64;
 
                     entity.update(cx, |this, cx| {
                         let local_x = px_val(ev.position.x - this.canvas_origin.x);
-                        let vp_left = this.cycle_to_pixel(vis_start as f64, max_cycle);
-                        let vp_right = this.cycle_to_pixel(vis_end as f64, max_cycle);
+                        let cr_left = this.cycle_to_pixel(cr_start as f64, max_cycle);
+                        let cr_right = this.cycle_to_pixel(cr_end as f64, max_cycle);
 
-                        let near_left = (local_x - vp_left).abs() < HANDLE_HIT_ZONE;
-                        let near_right = (local_x - vp_right).abs() < HANDLE_HIT_ZONE;
-                        let inside = local_x >= vp_left && local_x <= vp_right;
+                        let near_left = (local_x - cr_left).abs() < HANDLE_HIT_ZONE;
+                        let near_right = (local_x - cr_right).abs() < HANDLE_HIT_ZONE;
+                        let inside = local_x >= cr_left && local_x <= cr_right;
 
                         if near_left && !near_right {
                             this.drag_state = Some(MinimapDrag::ResizeLeft);
@@ -440,12 +457,15 @@ impl Render for MinimapView {
                         } else if inside {
                             this.drag_state = Some(MinimapDrag::Pan {
                                 start_mouse_x: local_x,
-                                start_scroll: scroll,
+                                start_scroll: cr_start_f,
                             });
                         } else {
-                            // Click outside: jump viewport center to click position.
+                            // Click outside counter range: jump pipeline viewport
+                            // to center on clicked position.
                             let clicked_cycle = this.pixel_to_cycle(local_x, max_cycle);
-                            let view_cycles = view_w as f64 / ppc as f64;
+                            let ts = state.read(cx);
+                            let view_cycles =
+                                ts.viewport.view_width as f64 / ts.viewport.pixels_per_cycle as f64;
                             let new_scroll = clicked_cycle - view_cycles / 2.0;
                             state.update(cx, |ts, cx| {
                                 ts.viewport.scroll_cycle = new_scroll.max(0.0);
@@ -469,13 +489,14 @@ impl Render for MinimapView {
                         let v = entity.read(cx);
                         (px_val(ev.position.x - v.canvas_origin.x), v.canvas_width)
                     };
-                    let max_cycle = state.read(cx).trace.max_cycle();
+                    let ts = state.read(cx);
+                    let max_cycle = ts.trace.max_cycle();
                     if max_cycle == 0 || canvas_width <= 0.0 {
                         return;
                     }
 
-                    // Convert mouse pixel to absolute cycle position.
-                    let mouse_cycle = (local_x as f64 / canvas_width as f64) * max_cycle as f64;
+                    let mouse_cycle = ((local_x as f64 / canvas_width as f64) * max_cycle as f64)
+                        .clamp(0.0, max_cycle as f64);
 
                     match drag {
                         MinimapDrag::Pan {
@@ -485,37 +506,30 @@ impl Render for MinimapView {
                             let start_cycle =
                                 (start_mouse_x as f64 / canvas_width as f64) * max_cycle as f64;
                             let dx = mouse_cycle - start_cycle;
+                            let (_, cr_end) = ts.effective_counter_range();
+                            let cr_width = cr_end as f64 - start_scroll;
+                            let new_start =
+                                (start_scroll + dx).clamp(0.0, max_cycle as f64 - cr_width);
+                            let new_end = (new_start + cr_width).min(max_cycle as f64);
                             state.update(cx, |ts, cx| {
-                                ts.viewport.scroll_cycle = (start_scroll + dx).max(0.0);
-                                ts.viewport.clamp();
+                                ts.counter_range = Some((new_start as u32, new_end as u32));
                                 cx.notify();
                             });
                         }
                         MinimapDrag::ResizeLeft => {
-                            // Left edge follows mouse directly.
-                            let vp = &state.read(cx).viewport;
-                            let current_end =
-                                vp.scroll_cycle + vp.view_width as f64 / vp.pixels_per_cycle as f64;
-                            let new_start = mouse_cycle.clamp(0.0, current_end - 10.0);
-                            let new_view = current_end - new_start;
-                            let new_ppc = vp.view_width as f64 / new_view;
+                            let (_, cr_end) = ts.effective_counter_range();
+                            let new_start = mouse_cycle.clamp(0.0, cr_end as f64 - 10.0) as u32;
                             state.update(cx, |ts, cx| {
-                                ts.viewport.scroll_cycle = new_start;
-                                ts.viewport.pixels_per_cycle = (new_ppc as f32).clamp(0.01, 500.0);
-                                ts.viewport.clamp();
+                                ts.counter_range = Some((new_start, cr_end));
                                 cx.notify();
                             });
                         }
                         MinimapDrag::ResizeRight => {
-                            // Right edge follows mouse directly.
-                            let vp = &state.read(cx).viewport;
+                            let (cr_start, _) = ts.effective_counter_range();
                             let new_end =
-                                mouse_cycle.clamp(vp.scroll_cycle + 10.0, max_cycle as f64);
-                            let new_view = new_end - vp.scroll_cycle;
-                            let new_ppc = vp.view_width as f64 / new_view;
+                                mouse_cycle.clamp(cr_start as f64 + 10.0, max_cycle as f64) as u32;
                             state.update(cx, |ts, cx| {
-                                ts.viewport.pixels_per_cycle = (new_ppc as f32).clamp(0.01, 500.0);
-                                ts.viewport.clamp();
+                                ts.counter_range = Some((cr_start, new_end));
                                 cx.notify();
                             });
                         }
@@ -531,21 +545,27 @@ impl Render for MinimapView {
                 }
             })
             .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _window, cx| {
+                // Scroll wheel on minimap zooms the counter range, not pipeline.
                 let local_x = px_val(ev.position.x - this.canvas_origin.x);
-                let max_cycle = this.state.read(cx).trace.max_cycle();
+                let ts = this.state.read(cx);
+                let max_cycle = ts.trace.max_cycle();
                 let focal_cycle = this.pixel_to_cycle(local_x, max_cycle);
+                let (cr_start, cr_end) = ts.effective_counter_range();
 
                 let delta = ev.delta.pixel_delta(px(20.0));
                 let dy = px_val(delta.y);
-                let factor = (1.0_f32 + dy * 0.005).clamp(0.5, 2.0);
+                let factor = (1.0_f64 + dy as f64 * 0.005).clamp(0.5, 2.0);
+
+                let cr_width = (cr_end as f64 - cr_start as f64) * factor;
+                let cr_width = cr_width.clamp(10.0, max_cycle as f64);
+                let focal_frac =
+                    (focal_cycle - cr_start as f64) / (cr_end as f64 - cr_start as f64).max(1.0);
+                let new_start =
+                    (focal_cycle - focal_frac * cr_width).clamp(0.0, max_cycle as f64 - cr_width);
+                let new_end = (new_start + cr_width).min(max_cycle as f64);
 
                 this.state.update(cx, |ts, cx| {
-                    let vp = &mut ts.viewport;
-                    let new_ppc = (vp.pixels_per_cycle * factor).clamp(0.01, 500.0);
-                    let focal_px = (focal_cycle - vp.scroll_cycle) * vp.pixels_per_cycle as f64;
-                    vp.pixels_per_cycle = new_ppc;
-                    vp.scroll_cycle = focal_cycle - focal_px / new_ppc as f64;
-                    vp.clamp();
+                    ts.counter_range = Some((new_start as u32, new_end as u32));
                     cx.notify();
                 });
                 cx.stop_propagation();

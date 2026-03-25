@@ -152,8 +152,8 @@ impl Render for CounterPanel {
                 );
         }
 
-        // Visible cycle range for sparklines
-        let (vis_start, vis_end) = ts.viewport.visible_cycle_range();
+        // Use counter range (independent from pipeline viewport) for sparklines.
+        let (vis_start, vis_end) = ts.effective_counter_range();
 
         // Build counter rows with sparklines
         let mut rows: Vec<AnyElement> = Vec::with_capacity(counters.len() * 2);
@@ -363,7 +363,7 @@ impl Render for CounterPanel {
 
                         // Pre-compute all heatmap data while holding the borrow.
                         let ts = state.read(cx);
-                        let (vis_start, vis_end) = ts.viewport.visible_cycle_range();
+                        let (vis_start, vis_end) = ts.effective_counter_range();
                         if vis_end <= vis_start {
                             return;
                         }
