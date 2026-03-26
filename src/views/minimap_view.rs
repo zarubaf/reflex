@@ -131,41 +131,17 @@ impl MinimapView {
     }
 }
 
-/// Paint the trendline as contiguous filled bars spanning the full width.
+/// Paint the trendline using the shared 1px-per-pixel bar renderer.
 fn paint_trendline_cached(
     data: &[(u64, u64)],
-    global_max: u64,
+    _global_max: u64,
     bounds: &Bounds<Pixels>,
     width: f32,
     height: f32,
     color: Hsla,
     window: &mut Window,
 ) {
-    if data.is_empty() || global_max == 0 {
-        return;
-    }
-    let n = data.len() as f32;
-
-    for (i, (_min_d, max_d)) in data.iter().enumerate() {
-        let bar_top = *max_d as f32 / global_max as f32;
-        if bar_top < 0.001 {
-            continue;
-        }
-        let bar_h = (bar_top * height).max(2.0);
-        let y_top = height - bar_h;
-        // Compute left/right edges from integer boundaries — no gaps.
-        let x = (i as f32 / n * width).floor();
-        let x_next = ((i + 1) as f32 / n * width).floor();
-        let bar_w = (x_next - x).max(1.0);
-
-        window.paint_quad(fill(
-            Bounds::new(
-                point(bounds.origin.x + px(x), bounds.origin.y + px(y_top)),
-                size(px(bar_w), px(bar_h)),
-            ),
-            color,
-        ));
-    }
+    crate::views::render_util::paint_bars(data, bounds, width, height, color, window);
 }
 
 impl Render for MinimapView {

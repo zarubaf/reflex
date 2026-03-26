@@ -246,34 +246,14 @@ impl Render for CounterPanel {
                                 let bucket_count = (width as usize).min(cycle_range).max(1);
                                 let data =
                                     ts.counter_downsample(idx, vis_start, vis_end, bucket_count);
-                                let global_max =
-                                    data.iter().map(|(_, mx)| *mx).max().unwrap_or(1).max(1);
-
-                                // Paint one bar per pixel — exactly 1px wide at integer coords.
-                                for pixel in 0..(width as usize) {
-                                    // Map this pixel to a data bucket.
-                                    let bucket =
-                                        (pixel as f32 / width * data.len() as f32) as usize;
-                                    let bucket = bucket.min(data.len().saturating_sub(1));
-                                    let (_, max_d) = data[bucket];
-                                    let bar_top = max_d as f32 / global_max as f32;
-                                    if bar_top <= 0.0 {
-                                        continue;
-                                    }
-                                    let bar_h = (bar_top * height).max(2.0);
-                                    let y_top = height - bar_h;
-
-                                    window.paint_quad(fill(
-                                        Bounds::new(
-                                            point(
-                                                bounds.origin.x + px(pixel as f32),
-                                                bounds.origin.y + px(y_top),
-                                            ),
-                                            size(px(1.0), px(bar_h)),
-                                        ),
-                                        SPARKLINE_COLOR,
-                                    ));
-                                }
+                                crate::views::render_util::paint_bars(
+                                    &data,
+                                    &bounds,
+                                    width,
+                                    height,
+                                    SPARKLINE_COLOR,
+                                    window,
+                                );
 
                                 // Paint cursor line
                                 let cursor_cycle =
