@@ -5,6 +5,7 @@ use gpui::*;
 use crate::app::{CursorState, TraceState};
 use crate::theme::colors;
 use crate::trace::model::RetireStatus;
+use crate::views::status_bar::fmt_num;
 
 /// Base header height (ruler + cursor heads, no delta lines).
 const HEADER_BASE: f32 = 20.0;
@@ -450,7 +451,7 @@ fn paint_timeline(
 
             // Cycle number label on major ticks.
             if is_major {
-                let label: SharedString = format!("{}", c).into();
+                let label: SharedString = fmt_num(c).into();
                 let font_size = px(9.0);
                 let run = TextRun {
                     len: label.len(),
@@ -935,7 +936,7 @@ fn paint_cursor_heads(
 
             // Delta label pill centered on the line.
             let delta = (cursor.cycle - active.cycle).abs();
-            let delta_label: SharedString = format!("{:.0}", delta).into();
+            let delta_label: SharedString = fmt_num(delta as i64).into();
             let delta_font_size = px(8.0);
             let delta_run = TextRun {
                 len: delta_label.len(),
@@ -1029,7 +1030,7 @@ fn paint_cursor_heads(
         };
 
         // Measure the head label to determine head width.
-        let label: SharedString = format!("{:.0}", cursor.cycle).into();
+        let label: SharedString = fmt_num(cursor.cycle as u64).into();
         let font_size = px(head_font_size);
         let run = TextRun {
             len: label.len(),
@@ -1137,7 +1138,7 @@ fn hit_test_cursor_head(
     let head_font_size = 9.0_f32;
     for (i, cursor) in cursor_state.cursors.iter().enumerate() {
         let cx = vp.cycle_to_pixel(cursor.cycle);
-        let label: SharedString = format!("{:.0}", cursor.cycle).into();
+        let label: SharedString = fmt_num(cursor.cycle as u64).into();
         let font_size = px(head_font_size);
         let run = TextRun {
             len: label.len(),

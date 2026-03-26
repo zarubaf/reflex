@@ -5,6 +5,7 @@ use gpui::*;
 use crate::app::{TooltipHover, TraceState};
 use crate::theme::colors;
 use crate::trace::model::RetireStatus;
+use crate::views::status_bar::fmt_num;
 use crate::views::timeline_pane::header_height;
 
 pub struct LabelPane {
@@ -255,7 +256,7 @@ fn paint_labels(
             let font_size = px((vp.row_height - 4.0).clamp(6.0, 12.0));
             let text_y = y + (vp.row_height - px_val(font_size)) / 2.0;
 
-            let row_str: SharedString = format!("{row}").into();
+            let row_str: SharedString = fmt_num(row).into();
             let row_run = TextRun {
                 len: row_str.len(),
                 font: Font {
