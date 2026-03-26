@@ -536,37 +536,27 @@ fn paint_timeline(
                 colors::GRID_LINE,
             ));
 
-            // Paint pre-computed counter data as filled bars.
+            // Paint pre-computed counter data using shared renderer.
             if !data.is_empty() {
-                let global_max = data.iter().map(|(_, mx)| *mx).max().unwrap_or(1).max(1);
-                let n = data.len() as f32;
-                let bar_w = (canvas_w / n).ceil().max(1.0);
-                let usable_h = overlay_h - 2.0; // leave 1px top/bottom
-
+                let usable_h = overlay_h - 2.0;
+                let overlay_content_bounds = Bounds::new(
+                    point(overlay_origin.x, overlay_origin.y + px(1.0)),
+                    size(bounds.size.width, px(usable_h)),
+                );
                 let fill_color = Hsla {
                     h: 210.0 / 360.0,
                     s: 0.55,
                     l: 0.50,
                     a: 0.55,
                 };
-
-                for (i, (_min_d, max_d)) in data.iter().enumerate() {
-                    let bar_top = *max_d as f32 / global_max as f32;
-                    if bar_top < 0.001 {
-                        continue;
-                    }
-                    let bar_h = (bar_top * usable_h).max(1.0);
-                    let y_top = overlay_h - 1.0 - bar_h;
-                    let x = (i as f32 / n * canvas_w).floor();
-
-                    window.paint_quad(fill(
-                        Bounds::new(
-                            point(overlay_origin.x + px(x), overlay_origin.y + px(y_top)),
-                            size(px(bar_w), px(bar_h)),
-                        ),
-                        fill_color,
-                    ));
-                }
+                crate::views::render_util::paint_bars(
+                    data,
+                    &overlay_content_bounds,
+                    canvas_w,
+                    usable_h,
+                    fill_color,
+                    window,
+                );
             }
         }
     }
