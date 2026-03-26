@@ -279,12 +279,15 @@ impl Render for TimelinePane {
                                         load_end.max(ts.trace.instructions[last_row].last_cycle);
                                 }
                                 // Use the trace summary's row-to-cycle mapping
-                                // when scrolled past loaded rows.
-                                if let Some(ref summary) = ts.trace_summary {
-                                    let rs = row_start.min(summary.total_instructions as usize);
-                                    let re = row_end.min(summary.total_instructions as usize);
-                                    load_start = load_start.min(summary.row_to_cycle(rs));
-                                    load_end = load_end.max(summary.row_to_cycle(re));
+                                // ONLY when scrolled past loaded rows. Don't expand
+                                // load range to cycle 0 just because scroll_row is 0.
+                                if row_end > row_count {
+                                    if let Some(ref summary) = ts.trace_summary {
+                                        let rs = row_start.max(row_count);
+                                        let re = row_end.min(summary.total_instructions as usize);
+                                        load_start = load_start.min(summary.row_to_cycle(rs));
+                                        load_end = load_end.max(summary.row_to_cycle(re));
+                                    }
                                 }
                             }
                             ts.ensure_segments_loaded(load_start, load_end);
