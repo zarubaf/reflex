@@ -9,6 +9,7 @@ pub mod minimap_view;
 pub mod pipeline_panel;
 #[allow(dead_code)]
 pub mod queue_panel;
+pub mod render_util;
 pub mod search_bar;
 pub mod status_bar;
 pub mod timeline_pane;
