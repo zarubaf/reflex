@@ -408,7 +408,7 @@ impl Render for MinimapView {
                                     window.paint_quad(fill(
                                         Bounds::new(
                                             point(bounds.origin.x + px(cursor_x), bounds.origin.y),
-                                            size(px(1.0), px(height - indicator_h)),
+                                            size(px(1.0), px(height)),
                                         ),
                                         cursor_color,
                                     ));
