@@ -327,15 +327,14 @@ impl TraceState {
                     // moiré patterns from mipmap bucket boundary misalignment.
                     let mut total_sum = 0u64;
                     let mut total_cycles = 0.0f64;
-                    for ei in entry_start..entry_end {
-                        let e_start = ei as f64 * level_interval;
+                    for (ei, entry) in entries[entry_start..entry_end].iter().enumerate() {
+                        let e_start = (entry_start + ei) as f64 * level_interval;
                         let e_end = e_start + level_interval;
-                        // Fraction of this entry that overlaps the output bucket.
                         let overlap_start = b_start.max(e_start);
                         let overlap_end = b_end.min(e_end);
                         let overlap = (overlap_end - overlap_start).max(0.0);
                         let entry_frac = overlap / level_interval;
-                        total_sum += (entries[ei].sum as f64 * entry_frac) as u64;
+                        total_sum += (entry.sum as f64 * entry_frac) as u64;
                         total_cycles += overlap;
                     }
                     let avg_rate = if total_cycles > 0.0 {

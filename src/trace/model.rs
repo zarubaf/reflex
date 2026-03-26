@@ -274,6 +274,7 @@ impl PipelineTrace {
     }
 
     /// Get counter rate over a window ending at the given cycle.
+    #[allow(dead_code)]
     pub fn counter_rate_at(&self, counter_idx: usize, cycle: u32, window: u32) -> f64 {
         let end_val = self.counter_value_at(counter_idx, cycle);
         let start_cycle = cycle.saturating_sub(window);
@@ -285,6 +286,7 @@ impl PipelineTrace {
         (end_val.wrapping_sub(start_val)) as f64 / actual_window as f64
     }
 
+    #[allow(dead_code)]
     /// Get single-cycle delta for a counter.
     ///
     /// With sparse samples, computes the interpolated per-cycle rate between
