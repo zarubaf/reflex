@@ -251,7 +251,6 @@ impl Render for CounterPanel {
 
                                 // Paint contiguous filled bars spanning the full width
                                 let n = data.len() as f32;
-                                let bar_w = (width / n).ceil().max(1.0);
                                 for (i, (_min_d, max_d)) in data.iter().enumerate() {
                                     let bar_top = *max_d as f32 / global_max as f32;
                                     if bar_top < 0.001 {
@@ -259,7 +258,10 @@ impl Render for CounterPanel {
                                     }
                                     let bar_h = (bar_top * height).max(2.0);
                                     let y_top = height - bar_h;
+                                    // Compute left/right edges from integer boundaries — no gaps.
                                     let x = (i as f32 / n * width).floor();
+                                    let x_next = ((i + 1) as f32 / n * width).floor();
+                                    let bar_w = (x_next - x).max(1.0);
 
                                     window.paint_quad(fill(
                                         Bounds::new(
@@ -386,8 +388,6 @@ impl Render for CounterPanel {
 
                         window.with_content_mask(Some(ContentMask { bounds }), |window| {
                             let n_f = bucket_count as f32;
-                            let bar_w = (width / n_f).ceil().max(1.0);
-
                             for (ci, (data, local_max, _name)) in heatmap_data.iter().enumerate() {
                                 let row_y = ci as f32 * row_h;
                                 for (bi, (_min_d, max_d)) in data.iter().enumerate() {
@@ -396,6 +396,8 @@ impl Render for CounterPanel {
                                         continue;
                                     }
                                     let x = (bi as f32 / n_f * width).floor();
+                                    let x_next = ((bi + 1) as f32 / n_f * width).floor();
+                                    let bar_w = (x_next - x).max(1.0);
                                     let color = Hsla {
                                         h: 210.0 / 360.0,
                                         s: 0.6,

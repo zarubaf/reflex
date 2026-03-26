@@ -145,8 +145,6 @@ fn paint_trendline_cached(
         return;
     }
     let n = data.len() as f32;
-    // Each bar fills width/n pixels — ceil to avoid sub-pixel gaps.
-    let bar_w = (width / n).ceil().max(1.0);
 
     for (i, (_min_d, max_d)) in data.iter().enumerate() {
         let bar_top = *max_d as f32 / global_max as f32;
@@ -155,7 +153,10 @@ fn paint_trendline_cached(
         }
         let bar_h = (bar_top * height).max(2.0);
         let y_top = height - bar_h;
+        // Compute left/right edges from integer boundaries — no gaps.
         let x = (i as f32 / n * width).floor();
+        let x_next = ((i + 1) as f32 / n * width).floor();
+        let bar_w = (x_next - x).max(1.0);
 
         window.paint_quad(fill(
             Bounds::new(
