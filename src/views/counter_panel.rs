@@ -162,15 +162,15 @@ impl Render for CounterPanel {
 
             let (value_str, value_label) = match mode {
                 CounterDisplayMode::Total => {
-                    let val = ts.trace.counter_value_at(idx, cursor_cycle);
+                    let val = ts.counter_value_at(idx, cursor_cycle);
                     (Self::format_value(val), "")
                 }
                 CounterDisplayMode::Rate => {
-                    let rate = ts.trace.counter_rate_at(idx, cursor_cycle, RATE_WINDOW);
+                    let rate = ts.counter_rate_at(idx, cursor_cycle, RATE_WINDOW);
                     (Self::format_rate(rate), "/cy")
                 }
                 CounterDisplayMode::Delta => {
-                    let delta = ts.trace.counter_delta_at(idx, cursor_cycle);
+                    let delta = ts.counter_delta_at(idx, cursor_cycle);
                     (Self::format_value(delta), "")
                 }
             };
