@@ -346,14 +346,8 @@ impl TraceState {
         if let Some(ref summary) = trace_summary {
             trace.total_instruction_count = summary.total_instructions as usize;
             self.viewport.max_row = summary.total_instructions as usize;
-            eprintln!(
-                "Loaded trace summary: {} instructions, {} counters, {} density levels",
-                summary.total_instructions,
-                summary.counters.len(),
-                summary.instruction_density.len()
-            );
         } else {
-            eprintln!("Warning: no trace summary available; total_instruction_count = 0");
+            eprintln!("warning: no trace summary; instruction count unknown until segments load");
             self.viewport.max_row = 0;
         }
 
