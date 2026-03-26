@@ -37,22 +37,16 @@ impl Render for StatusBar {
         let ts = self.state.read(cx);
         let vp = &ts.viewport;
 
-        let loaded = ts.trace.row_count();
-        let total_instrs = ts.trace.total_instruction_count;
-        let total = if total_instrs > 0 && loaded < total_instrs {
-            format!(
-                "{}/{} instrs, {} max cycle",
-                fmt_num(loaded),
-                fmt_num(total_instrs),
-                fmt_num(ts.trace.max_cycle())
-            )
+        let total_instrs = if ts.trace.total_instruction_count > 0 {
+            ts.trace.total_instruction_count
         } else {
-            format!(
-                "{} instrs, {} max cycle",
-                fmt_num(loaded),
-                fmt_num(ts.trace.max_cycle())
-            )
+            ts.trace.row_count()
         };
+        let total = format!(
+            "{} instrs, {} max cycle",
+            fmt_num(total_instrs),
+            fmt_num(ts.trace.max_cycle())
+        );
 
         let vis_end = (vp.scroll_cycle + vp.view_width as f64 / vp.pixels_per_cycle as f64) as u64;
         let cycle_info = format!(
