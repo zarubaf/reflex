@@ -477,6 +477,67 @@ impl TraceState {
         }
     }
 
+    /// Query buffer storage state at a given cycle.
+    ///
+    /// Returns a Vec of `(slot_index, field_values)` for occupied slots
+    /// (where the first field, `entity_id`, is non-zero).
+    /// `field_values` contains the raw u64 value for every field in the buffer.
+    ///
+    /// Returns an empty vec if no reader is available or the query fails.
+    pub fn query_buffer_state(&mut self, buffer_idx: usize, cycle: u32) -> Vec<(u16, Vec<u64>)> {
+        let buf = match self.trace.buffers.get(buffer_idx) {
+            Some(b) => b.clone(),
+            None => return Vec::new(),
+        };
+        let period_ps = match self.trace.period_ps {
+            Some(p) => p,
+            None => return Vec::new(),
+        };
+        let reader = match self.reader.as_mut() {
+            Some(r) => r,
+            None => return Vec::new(),
+        };
+
+        let time_ps = cycle as u64 * period_ps;
+        let trace_state = match reader.state_at(time_ps) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+
+        let storage_id = buf.storage_id;
+        let storage = match trace_state
+            .storages
+            .iter()
+            .find(|s| s.storage_id == storage_id)
+        {
+            Some(s) => s,
+            None => return Vec::new(),
+        };
+
+        let offsets = reader.field_offsets().get(storage_id as usize).cloned();
+        let offsets = match offsets {
+            Some(o) => o,
+            None => return Vec::new(),
+        };
+
+        let num_fields = buf.fields.len() as u16;
+        let mut result = Vec::new();
+
+        for slot in 0..storage.num_slots {
+            // First field is entity_id; occupied if non-zero.
+            let entity_id = storage.get_field_at(slot, &offsets, 0);
+            if entity_id == 0 {
+                continue;
+            }
+            let mut field_values = Vec::with_capacity(num_fields as usize);
+            for fi in 0..num_fields {
+                field_values.push(storage.get_field_at(slot, &offsets, fi));
+            }
+            result.push((slot, field_values));
+        }
+        result
+    }
+
     /// Record a frame and update FPS.
     pub fn record_frame(&mut self) {
         let now = Instant::now();
