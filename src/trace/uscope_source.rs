@@ -386,19 +386,30 @@ impl UscopeContext {
     }
 }
 
-/// Open a uscope file, read metadata + counters, but NO instructions.
+/// Open a uscope file, read metadata + segment index from the file, but NO
+/// instruction replay.
 ///
-/// Returns the Reader, a metadata-only PipelineTrace (with counters, buffers,
-/// stage names — but empty instructions/stages/dependencies), the SegmentIndex,
-/// and a UscopeContext needed for subsequent `load_segments()` calls.
+/// Returns the Reader, a metadata-only PipelineTrace (with counter names,
+/// buffers, stage names — but empty instructions/stages/dependencies), the
+/// SegmentIndex built from the file's segment table, the UscopeContext needed
+/// for subsequent `load_segments()` calls, and the TraceSummary (if embedded).
 pub fn open_uscope(
     path: &Path,
-) -> Result<(Reader, PipelineTrace, SegmentIndex, UscopeContext), TraceError> {
+) -> Result<
+    (
+        Reader,
+        PipelineTrace,
+        SegmentIndex,
+        UscopeContext,
+        Option<uscope::summary::TraceSummary>,
+    ),
+    TraceError,
+> {
     let path_str = path
         .to_str()
         .ok_or_else(|| TraceError::UnsupportedFormat("invalid path encoding".into()))?;
 
-    let mut reader = Reader::open(path_str).map_err(TraceError::Io)?;
+    let reader = Reader::open(path_str).map_err(TraceError::Io)?;
     let ids = resolve_cpu_protocol(&reader)?;
 
     let mut trace = PipelineTrace::new();
@@ -414,7 +425,8 @@ pub fn open_uscope(
         .map(|name| trace.intern_stage(name))
         .collect();
 
-    // Detect counter storages: 1-slot, dense, single U64 field
+    // Detect counter storages: 1-slot, dense, single U64 field.
+    // We only need the names — counter data comes from the TraceSummary mipmaps.
     let schema = reader.schema();
     let counter_storages: Vec<(u16, String)> = schema
         .storages
@@ -457,15 +469,8 @@ pub fn open_uscope(
         })
         .collect();
 
-    // Map storage_id → index into counter_series
-    let counter_storage_map: HashMap<u16, usize> = counter_storages
-        .iter()
-        .enumerate()
-        .map(|(idx, (sid, _))| (*sid, idx))
-        .collect();
-
-    // Initialize counter series with sparse samples
-    let mut counter_series: Vec<CounterSeries> = counter_storages
+    // Initialize counter series with names only (no samples — mipmap provides data).
+    let counter_series: Vec<CounterSeries> = counter_storages
         .iter()
         .map(|(_, name)| CounterSeries {
             name: name.clone(),
@@ -474,88 +479,113 @@ pub fn open_uscope(
         })
         .collect();
 
-    // Track cumulative counter values during replay
-    let mut counter_accum: Vec<u64> = vec![0; counter_storages.len()];
+    // Build SegmentIndex from the file's segment table (no replay needed).
+    // Read the segment table by re-opening the file and parsing section entries.
+    let segment_index = build_segment_index_from_file(path_str, &reader, ids.period_ps)?;
 
-    let num_segments = reader.segment_count();
-    let mut segment_index = SegmentIndex {
-        segments: Vec::with_capacity(num_segments),
-    };
+    // Read the TraceSummary from the Reader (embedded in the file by gen-uscope).
+    let trace_summary = reader.trace_summary().cloned();
 
-    // Replay all segments: process counters and build global instruction index.
-    let mut total_instruction_count: usize = 0;
-    let mut instruction_index: Vec<(u32, u32)> = Vec::new();
-    for seg_idx in 0..num_segments {
-        let (_storages, items) = reader.segment_replay(seg_idx).map_err(TraceError::Io)?;
-
-        // Track min/max cycle for this segment to build the segment index.
-        let mut seg_min_cycle: u32 = u32::MAX;
-        let mut seg_max_cycle: u32 = 0;
-
-        for item in items {
-            let item_cycle = (item.time_ps() / ids.period_ps) as u32;
-            if item_cycle < seg_min_cycle {
-                seg_min_cycle = item_cycle;
-            }
-            if item_cycle > seg_max_cycle {
-                seg_max_cycle = item_cycle;
-            }
-            if let TimedItem::Op(op) = item {
-                // Track entity creations for the global instruction index.
-                if op.storage_id == ids.entities_storage_id
-                    && op.action == DA_SLOT_SET
-                    && op.field_index == ids.field_entity_id
-                {
-                    total_instruction_count += 1;
-                    instruction_index.push((item_cycle, op.value as u32));
-                }
-                // Process counter ops.
-                if let Some(&counter_idx) = counter_storage_map.get(&op.storage_id) {
-                    if op.action == DA_SLOT_ADD {
-                        counter_accum[counter_idx] =
-                            counter_accum[counter_idx].wrapping_add(op.value);
-                    }
-                }
-            }
-        }
-
-        // Record this segment's cycle bounds.
-        if seg_min_cycle <= seg_max_cycle {
-            segment_index.segments.push((seg_min_cycle, seg_max_cycle));
-            // Store one sparse sample per counter at the segment boundary.
-            for (counter_idx, series) in counter_series.iter_mut().enumerate() {
-                series
-                    .samples
-                    .push((seg_max_cycle, counter_accum[counter_idx]));
-            }
-        } else {
-            segment_index.segments.push((0, 0));
-        }
+    // Set total_instruction_count from the TraceSummary if available.
+    if let Some(ref summary) = trace_summary {
+        trace.total_instruction_count = summary.total_instructions as usize;
+    } else {
+        eprintln!("Warning: no TraceSummary in file; instruction count unknown");
+        trace.total_instruction_count = 0;
     }
 
-    // Add a final sample at the total trace extent for each counter.
-    let total_cycle = (reader.header().total_time_ps / ids.period_ps) as u32;
-    for (counter_idx, series) in counter_series.iter_mut().enumerate() {
-        let last_cycle = series.samples.last().map(|(c, _)| *c).unwrap_or(0);
-        if last_cycle < total_cycle {
-            series
-                .samples
-                .push((total_cycle, counter_accum[counter_idx]));
-        }
-    }
     trace.counters = counter_series;
     trace.buffers = buffer_infos;
-    // Sort the instruction index by first_cycle for consistent row ordering.
-    instruction_index.sort_by_key(|(cycle, _)| *cycle);
-    trace.total_instruction_count = total_instruction_count;
-    trace.instruction_index = instruction_index;
 
     // Set max_cycle from header total_time_ps (covers all segments).
     trace.max_cycle_override = Some((reader.header().total_time_ps / ids.period_ps) as u32);
 
     let uctx = UscopeContext::from_ids(&ids, stage_name_indices);
 
-    Ok((reader, trace, segment_index, uctx))
+    Ok((reader, trace, segment_index, uctx, trace_summary))
+}
+
+/// Build a SegmentIndex by reading the segment table directly from the file.
+///
+/// This avoids replaying segments — we only need per-segment time bounds which
+/// are stored in the file's section table (for finalized traces) or segment
+/// chain (for live traces).
+fn build_segment_index_from_file(
+    path_str: &str,
+    reader: &Reader,
+    period_ps: u64,
+) -> Result<SegmentIndex, TraceError> {
+    use std::io::{BufReader, Seek, SeekFrom};
+    use uscope::types::*;
+
+    let file = std::fs::File::open(path_str).map_err(TraceError::Io)?;
+    let mut file = BufReader::new(file);
+
+    let header = FileHeader::read_from(&mut file).map_err(TraceError::Io)?;
+
+    let mut seg_entries: Vec<SegmentIndexEntry> = Vec::new();
+
+    if header.flags & F_COMPLETE != 0 && header.section_table_offset != 0 {
+        // Finalized file: read section table to find the segments section.
+        file.seek(SeekFrom::Start(header.section_table_offset))
+            .map_err(TraceError::Io)?;
+        loop {
+            let entry = SectionEntry::read_from(&mut file).map_err(TraceError::Io)?;
+            if entry.section_type == SECTION_END {
+                break;
+            }
+            if entry.section_type == SECTION_SEGMENTS {
+                seg_entries =
+                    uscope::segment::read_segment_table(&mut file, entry.offset, entry.size)
+                        .map_err(TraceError::Io)?;
+            }
+        }
+    }
+
+    // Fallback: walk the segment chain if no section table was found.
+    if seg_entries.is_empty() && header.tail_offset != 0 {
+        let chain =
+            uscope::segment::walk_chain(&mut file, header.tail_offset).map_err(TraceError::Io)?;
+        seg_entries = chain
+            .into_iter()
+            .map(|(offset, seg)| SegmentIndexEntry {
+                offset,
+                time_start_ps: seg.time_start_ps,
+                time_end_ps: seg.time_end_ps,
+            })
+            .collect();
+    }
+
+    // If we still have nothing, fall back to segment_count from the Reader
+    // with uniform distribution (best effort).
+    if seg_entries.is_empty() {
+        let n = reader.segment_count();
+        if n > 0 && header.total_time_ps > 0 {
+            let per_seg = header.total_time_ps / n as u64;
+            let mut segs = Vec::with_capacity(n);
+            for i in 0..n {
+                let start_ps = i as u64 * per_seg;
+                let end_ps = start_ps + per_seg;
+                let start_cycle = (start_ps / period_ps) as u32;
+                let end_cycle = (end_ps / period_ps) as u32;
+                segs.push((start_cycle, end_cycle));
+            }
+            return Ok(SegmentIndex { segments: segs });
+        }
+        return Ok(SegmentIndex::default());
+    }
+
+    // Convert ps-based time bounds to cycles.
+    let segments: Vec<(u32, u32)> = seg_entries
+        .iter()
+        .map(|e| {
+            let start_cycle = (e.time_start_ps / period_ps) as u32;
+            let end_cycle = (e.time_end_ps / period_ps) as u32;
+            (start_cycle, end_cycle)
+        })
+        .collect();
+
+    Ok(SegmentIndex { segments })
 }
 
 /// Result of loading instruction data from one or more segments.
@@ -1194,8 +1224,9 @@ mod tests {
             return; // skip if test data not available
         }
 
-        // Step 1: open_uscope should return metadata + counters but NO instructions.
-        let (mut reader, mut trace, segment_index, ctx) = open_uscope(path).unwrap();
+        // Step 1: open_uscope should return metadata but NO instructions.
+        let (mut reader, mut trace, segment_index, ctx, _trace_summary) =
+            open_uscope(path).unwrap();
         assert_eq!(
             trace.row_count(),
             0,
