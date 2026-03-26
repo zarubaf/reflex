@@ -603,25 +603,23 @@ impl Render for MinimapView {
                                 ts.viewport.view_width as f64 / ts.viewport.pixels_per_cycle as f64;
                             let new_scroll = clicked_cycle - view_cycles / 2.0;
 
-                            // Find the global instruction row for the clicked cycle
-                            // using the density mipmap (approximate but correct for navigation).
-                            let target_row = if let Some(ref summary) = ts.trace_summary {
-                                summary.cycle_to_row(cc)
-                            } else {
-                                // Fallback: search loaded instructions.
-                                ts.trace
-                                    .instructions
-                                    .iter()
-                                    .position(|instr| {
-                                        instr.first_cycle <= cc && instr.last_cycle >= cc
-                                    })
-                                    .unwrap_or(0)
-                            };
+                            // Find the loaded instruction at the clicked cycle.
+                            // Must use loaded-array index (not global) since the
+                            // renderer accesses trace.instructions[row] directly.
+                            let target_row = ts
+                                .trace
+                                .instructions
+                                .iter()
+                                .position(|instr| instr.first_cycle >= cc)
+                                .unwrap_or(ts.trace.row_count().saturating_sub(1));
                             let view_rows =
                                 ts.viewport.view_height as f64 / ts.viewport.row_height as f64;
 
                             state.update(cx, |ts, cx| {
                                 ts.viewport.scroll_cycle = new_scroll.max(0.0);
+                                // Update max_row to loaded count so the scrollbar
+                                // matches what the renderer can actually display.
+                                ts.viewport.max_row = ts.trace.row_count();
                                 ts.viewport.scroll_row =
                                     (target_row as f64 - view_rows / 2.0).max(0.0);
                                 ts.viewport.clamp();
