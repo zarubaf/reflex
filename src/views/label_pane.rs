@@ -203,6 +203,12 @@ fn paint_labels(
         },
     };
 
+    // Compute row label column width from the widest possible row number.
+    let max_row_num = trace.total_instruction_count.max(trace.row_count());
+    let max_row_str = fmt_num(max_row_num);
+    // Approximate width: ~7px per char at 9pt Menlo + 8px padding.
+    let row_label_w = (max_row_str.len() as f32 * 7.0 + 8.0).max(44.0);
+
     window.with_content_mask(Some(content_clip), |window| {
         let (row_start, row_end) = vp.visible_row_range();
 
@@ -305,7 +311,7 @@ fn paint_labels(
                     .shape_line(disasm, font_size, &[disasm_run], None);
             let _ = disasm_line.paint(
                 Point {
-                    x: bounds.origin.x + px(44.0),
+                    x: bounds.origin.x + px(row_label_w),
                     y: content_origin_y + px(text_y),
                 },
                 font_size,
