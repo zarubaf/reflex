@@ -323,16 +323,27 @@ impl TraceState {
                     let entry_start = (b_start / level_interval) as usize;
                     let entry_end = ((b_end / level_interval).ceil() as usize).min(entries.len());
 
-                    let mut min_d = u64::MAX;
-                    let mut max_d = 0u64;
-                    for entry in &entries[entry_start..entry_end] {
-                        min_d = min_d.min(entry.min_delta);
-                        max_d = max_d.max(entry.max_delta);
+                    // Use weighted average rate instead of raw min/max to avoid
+                    // moiré patterns from mipmap bucket boundary misalignment.
+                    let mut total_sum = 0u64;
+                    let mut total_cycles = 0.0f64;
+                    for ei in entry_start..entry_end {
+                        let e_start = ei as f64 * level_interval;
+                        let e_end = e_start + level_interval;
+                        // Fraction of this entry that overlaps the output bucket.
+                        let overlap_start = b_start.max(e_start);
+                        let overlap_end = b_end.min(e_end);
+                        let overlap = (overlap_end - overlap_start).max(0.0);
+                        let entry_frac = overlap / level_interval;
+                        total_sum += (entries[ei].sum as f64 * entry_frac) as u64;
+                        total_cycles += overlap;
                     }
-                    if min_d == u64::MAX {
-                        min_d = 0;
-                    }
-                    result.push((min_d, max_d));
+                    let avg_rate = if total_cycles > 0.0 {
+                        (total_sum as f64 / total_cycles * level_interval) as u64
+                    } else {
+                        0
+                    };
+                    result.push((avg_rate, avg_rate));
                 }
                 return result;
             }
