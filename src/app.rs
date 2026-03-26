@@ -243,6 +243,37 @@ impl TraceState {
         self.counter_range.unwrap_or((0, self.trace.max_cycle()))
     }
 
+    /// Get counter value at a cycle, using mipmap if available.
+    pub fn counter_value_at(&self, counter_idx: usize, cycle: u32) -> u64 {
+        if let Some(ref summary) = self.trace_summary {
+            summary.counter_value_at(counter_idx, cycle)
+        } else {
+            self.trace.counter_value_at(counter_idx, cycle)
+        }
+    }
+
+    /// Get counter rate at a cycle, using mipmap if available.
+    pub fn counter_rate_at(&self, counter_idx: usize, cycle: u32, window: u32) -> f64 {
+        let end_val = self.counter_value_at(counter_idx, cycle);
+        let start_val = self.counter_value_at(counter_idx, cycle.saturating_sub(window));
+        let actual_window = cycle.saturating_sub(cycle.saturating_sub(window));
+        if actual_window == 0 {
+            return 0.0;
+        }
+        (end_val.wrapping_sub(start_val)) as f64 / actual_window as f64
+    }
+
+    /// Get counter delta at a cycle, using mipmap if available.
+    pub fn counter_delta_at(&self, counter_idx: usize, cycle: u32) -> u64 {
+        let curr = self.counter_value_at(counter_idx, cycle);
+        let prev = if cycle > 0 {
+            self.counter_value_at(counter_idx, cycle - 1)
+        } else {
+            0
+        };
+        curr.wrapping_sub(prev)
+    }
+
     /// Fast counter downsampling using mipmaps when available.
     /// Falls back to PipelineTrace::counter_downsample_minmax() for sparse samples.
     pub fn counter_downsample(
