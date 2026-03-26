@@ -160,10 +160,6 @@ pub struct PipelineTrace {
     /// Total instruction count in the trace (exact, from file metadata or counting).
     /// May differ from `instructions.len()` during lazy loading.
     pub total_instruction_count: usize,
-    /// Global instruction index: (first_cycle, entity_id) for every instruction in the trace.
-    /// Built during open, enables row-to-cycle mapping for lazy loading.
-    /// Sorted by first_cycle.
-    pub instruction_index: Vec<(u32, u32)>,
     /// Key-value metadata from the trace source (DUT properties, format info, etc.).
     pub metadata: Vec<(String, String)>,
     /// Clock period in picoseconds (from uscope traces). Enables cycle↔timestamp conversion.
@@ -185,7 +181,6 @@ impl PipelineTrace {
             counters: Vec::new(),
             buffers: Vec::new(),
             total_instruction_count: 0,
-            instruction_index: Vec::new(),
             metadata: Vec::new(),
             period_ps: None,
             max_cycle_override: None,

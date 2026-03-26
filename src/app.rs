@@ -214,8 +214,8 @@ pub struct TraceState {
     pub uscope_ctx: Option<crate::trace::uscope_source::UscopeContext>,
     /// Set of segment indices whose instructions have been loaded into the trace.
     pub loaded_segments: HashSet<usize>,
-    /// Pre-computed counter mipmaps for fast multi-resolution queries.
-    pub counter_summary: Option<uscope::summary::CounterSummary>,
+    /// Pre-computed trace summary (counter mipmaps + instruction density) for fast queries.
+    pub trace_summary: Option<uscope::summary::TraceSummary>,
 }
 
 impl TraceState {
@@ -234,7 +234,7 @@ impl TraceState {
             segment_index: SegmentIndex::default(),
             uscope_ctx: None,
             loaded_segments: HashSet::new(),
-            counter_summary: None,
+            trace_summary: None,
         }
     }
 
@@ -257,7 +257,7 @@ impl TraceState {
         }
 
         // Try mipmap first.
-        if let Some(ref summary) = self.counter_summary {
+        if let Some(ref summary) = self.trace_summary {
             if counter_idx < summary.counters.len() {
                 let mipmap = &summary.counters[counter_idx];
                 let range_cycles = end_cycle - start_cycle;
@@ -332,53 +332,33 @@ impl TraceState {
     /// instructions are loaded on demand as the viewport scrolls.
     pub fn load_trace_lazy(
         &mut self,
-        trace: PipelineTrace,
+        mut trace: PipelineTrace,
         reader: Reader,
         segment_index: SegmentIndex,
         uscope_ctx: crate::trace::uscope_source::UscopeContext,
+        trace_summary: Option<uscope::summary::TraceSummary>,
     ) {
         self.viewport.max_cycle = trace.max_cycle();
-        // max_row = total instructions. The global instruction_index provides
-        // row-to-cycle mapping so vertical scroll covers the full trace.
-        self.viewport.max_row = trace.total_instruction_count;
+
+        // Use trace summary for total instruction count and max_row if available.
+        if let Some(ref summary) = trace_summary {
+            trace.total_instruction_count = summary.total_instructions as usize;
+            self.viewport.max_row = summary.total_instructions as usize;
+            eprintln!(
+                "Loaded trace summary: {} instructions, {} counters, {} density levels",
+                summary.total_instructions,
+                summary.counters.len(),
+                summary.instruction_density.len()
+            );
+        } else {
+            eprintln!("Warning: no trace summary available; total_instruction_count = 0");
+            self.viewport.max_row = 0;
+        }
+
         self.viewport.clamp();
-        let period_ps = trace.period_ps.unwrap_or(1000);
         self.trace = Arc::new(trace);
         self.reader = Some(reader);
-        // Load counter mipmaps: prefer embedded summary from the file,
-        // fall back to computing on the fly.
-        if let Some(ref mut rdr) = self.reader {
-            if let Some(summary) = rdr.counter_summary() {
-                eprintln!(
-                    "Loaded embedded counter mipmaps: {} counters, {} levels",
-                    summary.counters.len(),
-                    summary
-                        .counters
-                        .first()
-                        .map(|c| c.levels.len())
-                        .unwrap_or(0)
-                );
-                self.counter_summary = Some(summary.clone());
-            } else {
-                match uscope::summary::compute_counter_summary(rdr, period_ps) {
-                    Ok(summary) => {
-                        eprintln!(
-                            "Computed counter mipmaps: {} counters, {} levels",
-                            summary.counters.len(),
-                            summary
-                                .counters
-                                .first()
-                                .map(|c| c.levels.len())
-                                .unwrap_or(0)
-                        );
-                        self.counter_summary = Some(summary);
-                    }
-                    Err(e) => {
-                        eprintln!("Warning: failed to compute counter mipmaps: {}", e);
-                    }
-                }
-            }
-        }
+        self.trace_summary = trace_summary;
         self.segment_index = segment_index;
         self.uscope_ctx = Some(uscope_ctx);
         self.loaded_segments.clear();
@@ -826,10 +806,10 @@ impl AppView {
         cx: &mut Context<Self>,
     ) {
         match crate::trace::uscope_source::open_uscope(path) {
-            Ok((reader, trace, segment_index, uscope_ctx)) => {
+            Ok((reader, trace, segment_index, uscope_ctx, trace_summary)) => {
                 let state = cx.new(|_cx| TraceState::new());
                 state.update(cx, |ts, _cx| {
-                    ts.load_trace_lazy(trace, reader, segment_index, uscope_ctx)
+                    ts.load_trace_lazy(trace, reader, segment_index, uscope_ctx, trace_summary)
                 });
                 let id = self.next_tab_id;
                 self.next_tab_id += 1;
@@ -1040,13 +1020,19 @@ impl AppView {
             if let Ok(Ok(Some(paths))) = receiver.await {
                 if let Some(path) = paths.first() {
                     match crate::trace::uscope_source::open_uscope(path) {
-                        Ok((reader, trace, segment_index, uscope_ctx)) => {
+                        Ok((reader, trace, segment_index, uscope_ctx, trace_summary)) => {
                             let path_str = path.to_string_lossy().into_owned();
                             let _ = cx.update(|cx| {
                                 let _ = this.update(cx, |app, cx| {
                                     let state = cx.new(|_cx| TraceState::new());
                                     state.update(cx, |ts, _cx| {
-                                        ts.load_trace_lazy(trace, reader, segment_index, uscope_ctx)
+                                        ts.load_trace_lazy(
+                                            trace,
+                                            reader,
+                                            segment_index,
+                                            uscope_ctx,
+                                            trace_summary,
+                                        )
                                     });
                                     let id = app.next_tab_id;
                                     app.next_tab_id += 1;
@@ -1083,9 +1069,9 @@ impl AppView {
         let file_path = self.tabs[self.active_tab].file_path.clone();
         if let Some(ref path) = file_path {
             match crate::trace::uscope_source::open_uscope(std::path::Path::new(path)) {
-                Ok((reader, trace, segment_index, uscope_ctx)) => {
+                Ok((reader, trace, segment_index, uscope_ctx, trace_summary)) => {
                     self.with_active_state(cx, |ts, cx| {
-                        ts.load_trace_lazy(trace, reader, segment_index, uscope_ctx);
+                        ts.load_trace_lazy(trace, reader, segment_index, uscope_ctx, trace_summary);
                         cx.notify();
                     });
                 }
