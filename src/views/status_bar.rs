@@ -62,7 +62,19 @@ impl Render for StatusBar {
         );
 
         let (row_start, row_end) = vp.visible_row_range();
-        let row_info = format!("Rows: {}-{}", fmt_num(row_start), fmt_num(row_end));
+        // Show global instruction indices via density mipmap if available.
+        let row_info = if let Some(ref summary) = ts.trace_summary {
+            let vis_start_cycle = vp.scroll_cycle as u32;
+            let vis_end_cycle =
+                (vp.scroll_cycle + vp.view_width as f64 / vp.pixels_per_cycle as f64) as u32;
+            format!(
+                "Instrs: {}-{}",
+                fmt_num(summary.cycle_to_row(vis_start_cycle)),
+                fmt_num(summary.cycle_to_row(vis_end_cycle))
+            )
+        } else {
+            format!("Rows: {}-{}", fmt_num(row_start), fmt_num(row_end))
+        };
         let zoom_info = format!(
             "Zoom: {:.1}px/cyc, {:.1}px/row",
             vp.pixels_per_cycle, vp.row_height
