@@ -253,7 +253,7 @@ impl Render for CounterPanel {
                                 let n = data.len() as f32;
                                 for (i, (_min_d, max_d)) in data.iter().enumerate() {
                                     let bar_top = *max_d as f32 / global_max as f32;
-                                    if bar_top < 0.001 {
+                                    if bar_top <= 0.0 {
                                         continue;
                                     }
                                     let bar_h = (bar_top * height).max(2.0);
