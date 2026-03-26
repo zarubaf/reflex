@@ -277,14 +277,13 @@ impl Render for TimelinePane {
                                     load_end =
                                         load_end.max(ts.trace.instructions[last_row].last_cycle);
                                 }
-                                // Use the global instruction index for exact row-to-cycle
-                                // mapping when scrolled past loaded rows.
-                                let idx = &ts.trace.instruction_index;
-                                if !idx.is_empty() {
-                                    let rs = row_start.min(idx.len().saturating_sub(1));
-                                    let re = row_end.min(idx.len().saturating_sub(1));
-                                    load_start = load_start.min(idx[rs].0);
-                                    load_end = load_end.max(idx[re].0);
+                                // Use the trace summary's row-to-cycle mapping
+                                // when scrolled past loaded rows.
+                                if let Some(ref summary) = ts.trace_summary {
+                                    let rs = row_start.min(summary.total_instructions as usize);
+                                    let re = row_end.min(summary.total_instructions as usize);
+                                    load_start = load_start.min(summary.row_to_cycle(rs));
+                                    load_end = load_end.max(summary.row_to_cycle(re));
                                 }
                             }
                             ts.ensure_segments_loaded(load_start, load_end);
