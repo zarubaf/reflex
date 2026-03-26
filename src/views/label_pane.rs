@@ -144,11 +144,25 @@ impl Render for LabelPane {
                         }
                     },
                     move |bounds, _bounds_data, window, cx| {
-                        let (viewport, selected_row, trace) = {
+                        let (viewport, selected_row, trace, trace_summary) = {
                             let ts = state.read(cx);
-                            (ts.viewport.clone(), ts.selected_row, Arc::clone(&ts.trace))
+                            (
+                                ts.viewport.clone(),
+                                ts.selected_row,
+                                Arc::clone(&ts.trace),
+                                ts.trace_summary.clone(),
+                            )
                         };
-                        paint_labels(bounds, &trace, &viewport, selected_row, hdr_h, window, cx);
+                        paint_labels(
+                            bounds,
+                            &trace,
+                            &viewport,
+                            selected_row,
+                            trace_summary.as_ref(),
+                            hdr_h,
+                            window,
+                            cx,
+                        );
                     },
                 )
                 .size_full(),
@@ -162,6 +176,7 @@ fn paint_labels(
     trace: &crate::trace::model::PipelineTrace,
     vp: &crate::interaction::viewport::ViewportState,
     selected_row: Option<usize>,
+    trace_summary: Option<&uscope::summary::TraceSummary>,
     hdr_h: f32,
     window: &mut Window,
     cx: &mut App,
@@ -262,7 +277,14 @@ fn paint_labels(
             let font_size = px((vp.row_height - 4.0).clamp(6.0, 12.0));
             let text_y = y + (vp.row_height - px_val(font_size)) / 2.0;
 
-            let row_str: SharedString = fmt_num(row).into();
+            // Show global instruction index if density mipmap is available,
+            // otherwise show loaded-array index.
+            let global_row = if let Some(summary) = trace_summary {
+                summary.cycle_to_row(instr.first_cycle)
+            } else {
+                row
+            };
+            let row_str: SharedString = fmt_num(global_row).into();
             let row_run = TextRun {
                 len: row_str.len(),
                 font: Font {
