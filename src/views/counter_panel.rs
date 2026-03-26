@@ -249,27 +249,27 @@ impl Render for CounterPanel {
                                 let global_max =
                                     data.iter().map(|(_, mx)| *mx).max().unwrap_or(1).max(1);
 
-                                // Paint contiguous filled bars spanning the full width
-                                let n = data.len() as f32;
-                                for (i, (_min_d, max_d)) in data.iter().enumerate() {
-                                    let bar_top = *max_d as f32 / global_max as f32;
+                                // Paint one bar per pixel — exactly 1px wide at integer coords.
+                                for pixel in 0..(width as usize) {
+                                    // Map this pixel to a data bucket.
+                                    let bucket =
+                                        (pixel as f32 / width * data.len() as f32) as usize;
+                                    let bucket = bucket.min(data.len().saturating_sub(1));
+                                    let (_, max_d) = data[bucket];
+                                    let bar_top = max_d as f32 / global_max as f32;
                                     if bar_top <= 0.0 {
                                         continue;
                                     }
                                     let bar_h = (bar_top * height).max(2.0);
                                     let y_top = height - bar_h;
-                                    // Compute left/right edges from integer boundaries — no gaps.
-                                    let x = (i as f32 / n * width).floor();
-                                    let x_next = ((i + 1) as f32 / n * width).floor();
-                                    let bar_w = (x_next - x).max(1.0);
 
                                     window.paint_quad(fill(
                                         Bounds::new(
                                             point(
-                                                bounds.origin.x + px(x),
+                                                bounds.origin.x + px(pixel as f32),
                                                 bounds.origin.y + px(y_top),
                                             ),
-                                            size(px(bar_w), px(bar_h)),
+                                            size(px(1.0), px(bar_h)),
                                         ),
                                         SPARKLINE_COLOR,
                                     ));
