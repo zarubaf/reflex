@@ -780,14 +780,12 @@ impl AppView {
             let center = DockItem::tabs(center_tabs, &weak, window, cx);
             dock_area.set_center(center, window, cx);
 
-            // Build dock with buffer panels + separate log tab.
+            // Build dock with buffer panels only (no log — accessible via Cmd+B toggle).
             if !buffers.is_empty() {
                 let mut dock_items: Vec<DockItem> = Vec::new();
                 for bp in &buffers {
                     dock_items.push(DockItem::tab(bp.clone(), &weak, window, cx));
                 }
-                // Log panel as its own separate section.
-                dock_items.push(DockItem::tab(lp.clone(), &weak, window, cx));
 
                 let dock_split = match placement {
                     DockPlacement::Bottom => DockItem::h_split(dock_items, &weak, window, cx),
