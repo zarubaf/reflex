@@ -277,10 +277,18 @@ fn paint_labels(
             let font_size = px((vp.row_height - 4.0).clamp(6.0, 12.0));
             let text_y = y + (vp.row_height - px_val(font_size)) / 2.0;
 
-            // Show global instruction index if density mipmap is available,
-            // otherwise show loaded-array index.
+            // Show global instruction index. Use cycle_to_row as base,
+            // plus the loaded-array offset from the first visible row
+            // to ensure monotonically increasing numbers.
             let global_row = if let Some(summary) = trace_summary {
-                summary.cycle_to_row(instr.first_cycle)
+                let base = summary.cycle_to_row(
+                    trace
+                        .instructions
+                        .get(row_start)
+                        .map(|i| i.first_cycle)
+                        .unwrap_or(0),
+                );
+                base + (row - row_start)
             } else {
                 row
             };
