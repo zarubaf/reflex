@@ -143,16 +143,51 @@ impl Render for BufferPanel {
 
                     // Field values
                     for (fi, val) in field_values.iter().enumerate() {
-                        let display = format_field_value(*val, field_types.get(fi).copied());
-                        row_children.push(
-                            div()
-                                .flex_1()
-                                .min_w(px(60.0))
-                                .text_color(colors::TEXT_PRIMARY)
-                                .child(display)
-                                .into_any_element(),
-                        );
+                        let ft = field_types.get(fi).copied();
+                        if ft == Some(0x09) {
+                            // Bool → colored dot (green=true, red=false)
+                            let dot_color = if *val != 0 {
+                                Hsla {
+                                    h: 120.0 / 360.0,
+                                    s: 0.7,
+                                    l: 0.45,
+                                    a: 1.0,
+                                }
+                            } else {
+                                Hsla {
+                                    h: 0.0,
+                                    s: 0.7,
+                                    l: 0.55,
+                                    a: 1.0,
+                                }
+                            };
+                            row_children.push(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(60.0))
+                                    .flex()
+                                    .items_center()
+                                    .child(
+                                        div().w(px(6.0)).h(px(6.0)).rounded(px(3.0)).bg(dot_color),
+                                    )
+                                    .into_any_element(),
+                            );
+                        } else {
+                            let display = format_field_value(*val, ft);
+                            row_children.push(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(60.0))
+                                    .text_color(colors::TEXT_PRIMARY)
+                                    .child(display)
+                                    .into_any_element(),
+                            );
+                        }
                     }
+
+                    // Entity ID for click-to-select.
+                    let entity_id = field_values.first().copied().unwrap_or(0) as u32;
+                    let state = self.state.clone();
 
                     div()
                         .id(("slot-row", row_idx))
@@ -160,7 +195,20 @@ impl Render for BufferPanel {
                         .gap_1()
                         .px_2()
                         .py(px(1.0))
+                        .cursor_pointer()
                         .when(row_idx % 2 == 0, |d| d.bg(colors::BG_SECONDARY))
+                        .hover(|d| d.bg(colors::GRID_LINE))
+                        .on_click(move |_, _, cx| {
+                            state.update(cx, |ts, cx| {
+                                // Find the loaded instruction matching this entity_id.
+                                if let Some(row) =
+                                    ts.trace.instructions.iter().position(|i| i.id == entity_id)
+                                {
+                                    ts.selected_row = Some(row);
+                                }
+                                cx.notify();
+                            });
+                        })
                         .children(row_children)
                         .into_any_element()
                 })
