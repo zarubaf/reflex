@@ -123,84 +123,131 @@ impl Render for BufferPanel {
                 .border_color(colors::GRID_LINE)
                 .children(header_children);
 
-            // Slot rows
+            // Slot rows — show: ready dot | slot | disasm | stage
+            let ts = self.state.read(cx);
+            let selected_row = ts.selected_row;
             let slot_rows: Vec<AnyElement> = self
                 .cached_slots
                 .iter()
                 .enumerate()
                 .map(|(row_idx, (slot, field_values))| {
+                    let entity_id = field_values.first().copied().unwrap_or(0) as u32;
+
+                    // Look up instruction details from loaded trace.
+                    let instr_row = ts.trace.instructions.iter().position(|i| i.id == entity_id);
+                    let disasm = instr_row
+                        .map(|r| ts.trace.instructions[r].disasm.clone())
+                        .unwrap_or_else(|| format!("entity {}", entity_id));
+                    let stage_name = instr_row.and_then(|r| {
+                        let instr = &ts.trace.instructions[r];
+                        let stages = ts.trace.stages_for(r);
+                        stages
+                            .iter()
+                            .filter(|s| s.start_cycle <= cursor_cycle && cursor_cycle < s.end_cycle)
+                            .last()
+                            .map(|s| ts.trace.stage_name(s.stage_name_idx).to_string())
+                    });
+
+                    let is_selected = instr_row == selected_row && selected_row.is_some();
+
                     let mut row_children: Vec<AnyElement> = Vec::new();
 
-                    // Slot number
+                    // Ready dot first (find Bool field).
+                    let ready_val = field_types
+                        .iter()
+                        .enumerate()
+                        .find(|(_, ft)| **ft == 0x09)
+                        .and_then(|(fi, _)| field_values.get(fi + 1)) // +1 because field_types doesn't include entity_id
+                        .or_else(|| {
+                            // Check if any field_value corresponds to a Bool type
+                            field_types
+                                .iter()
+                                .zip(field_values.iter().skip(1))
+                                .find(|(ft, _)| **ft == 0x09)
+                                .map(|(_, v)| v)
+                        });
+                    if let Some(&ready) = ready_val {
+                        let dot_color = if ready != 0 {
+                            Hsla {
+                                h: 120.0 / 360.0,
+                                s: 0.7,
+                                l: 0.45,
+                                a: 1.0,
+                            }
+                        } else {
+                            Hsla {
+                                h: 0.0,
+                                s: 0.7,
+                                l: 0.55,
+                                a: 1.0,
+                            }
+                        };
+                        row_children.push(
+                            div()
+                                .w(px(14.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(div().w(px(6.0)).h(px(6.0)).rounded(px(3.0)).bg(dot_color))
+                                .into_any_element(),
+                        );
+                    }
+
+                    // Slot number.
                     row_children.push(
                         div()
-                            .w(px(40.0))
+                            .w(px(36.0))
                             .flex_shrink_0()
                             .text_color(colors::TEXT_ROW_NUMBER)
-                            .child(format!("{}", slot))
+                            .child(format!("0x{:02x}", slot))
                             .into_any_element(),
                     );
 
-                    // Field values
-                    for (fi, val) in field_values.iter().enumerate() {
-                        let ft = field_types.get(fi).copied();
-                        if ft == Some(0x09) {
-                            // Bool → colored dot (green=true, red=false)
-                            let dot_color = if *val != 0 {
-                                Hsla {
-                                    h: 120.0 / 360.0,
-                                    s: 0.7,
-                                    l: 0.45,
-                                    a: 1.0,
-                                }
-                            } else {
-                                Hsla {
-                                    h: 0.0,
-                                    s: 0.7,
-                                    l: 0.55,
-                                    a: 1.0,
-                                }
-                            };
-                            row_children.push(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(60.0))
-                                    .flex()
-                                    .items_center()
-                                    .child(
-                                        div().w(px(6.0)).h(px(6.0)).rounded(px(3.0)).bg(dot_color),
-                                    )
-                                    .into_any_element(),
-                            );
-                        } else {
-                            let display = format_field_value(*val, ft);
-                            row_children.push(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(60.0))
-                                    .text_color(colors::TEXT_PRIMARY)
-                                    .child(display)
-                                    .into_any_element(),
-                            );
-                        }
+                    // Stage name.
+                    if let Some(ref stage) = stage_name {
+                        let stage_idx = ts.trace.stage_name_idx(stage).unwrap_or(0);
+                        row_children.push(
+                            div()
+                                .w(px(24.0))
+                                .text_color(colors::stage_color(stage_idx))
+                                .child(stage.clone())
+                                .into_any_element(),
+                        );
                     }
 
-                    // Entity ID for click-to-select.
-                    let entity_id = field_values.first().copied().unwrap_or(0) as u32;
+                    // Instruction disasm.
+                    row_children.push(
+                        div()
+                            .flex_1()
+                            .text_color(colors::TEXT_PRIMARY)
+                            .overflow_x_hidden()
+                            .child(disasm)
+                            .into_any_element(),
+                    );
+
                     let state = self.state.clone();
 
                     div()
                         .id(("slot-row", row_idx))
                         .flex()
-                        .gap_1()
+                        .gap_2()
                         .px_2()
                         .py(px(1.0))
                         .cursor_pointer()
-                        .when(row_idx % 2 == 0, |d| d.bg(colors::BG_SECONDARY))
+                        .when(is_selected, |d| {
+                            d.bg(Hsla {
+                                h: 210.0 / 360.0,
+                                s: 0.6,
+                                l: 0.25,
+                                a: 1.0,
+                            })
+                        })
+                        .when(!is_selected && row_idx % 2 == 0, |d| {
+                            d.bg(colors::BG_SECONDARY)
+                        })
                         .hover(|d| d.bg(colors::GRID_LINE))
                         .on_click(move |_, _, cx| {
                             state.update(cx, |ts, cx| {
-                                // Find the loaded instruction matching this entity_id.
                                 if let Some(row) =
                                     ts.trace.instructions.iter().position(|i| i.id == entity_id)
                                 {
