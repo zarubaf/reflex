@@ -348,35 +348,60 @@ impl Render for MinimapView {
                                     border_style: BorderStyle::default(),
                                 });
 
-                                // 5. Pipeline viewport indicator (yellow bar at bottom)
+                                // 5. Pipeline viewport indicator — full-height translucent
+                                // overlay with bright border, always visible even when
+                                // the pipeline viewport is tiny relative to the counter range.
                                 let pvp = &ts.viewport;
                                 let (pv_start, pv_end) = pvp.visible_cycle_range();
                                 let pv_left = ((pv_start as f64 / max_cycle as f64) as f32 * width)
                                     .clamp(0.0, width);
                                 let pv_right = ((pv_end as f64 / max_cycle as f64) as f32 * width)
                                     .clamp(0.0, width);
-                                let pv_width = (pv_right - pv_left).max(8.0).min(width - pv_left);
-                                let indicator_h = 5.0;
-                                window.paint_quad(PaintQuad {
-                                    bounds: Bounds::new(
-                                        point(
-                                            bounds.origin.x + px(pv_left),
-                                            bounds.origin.y + px(height - indicator_h),
-                                        ),
-                                        size(px(pv_width), px(indicator_h)),
+                                let pv_width = (pv_right - pv_left).max(3.0).min(width - pv_left);
+                                let indicator_color = Hsla {
+                                    h: 40.0 / 360.0,
+                                    s: 0.8,
+                                    l: 0.55,
+                                    a: 1.0,
+                                };
+                                // Full-height translucent fill.
+                                window.paint_quad(fill(
+                                    Bounds::new(
+                                        point(bounds.origin.x + px(pv_left), bounds.origin.y),
+                                        size(px(pv_width), px(height)),
                                     ),
-                                    corner_radii: Corners::all(px(2.0)),
-                                    background: Hsla {
-                                        h: 40.0 / 360.0,
-                                        s: 0.8,
-                                        l: 0.55,
-                                        a: 0.9,
-                                    }
-                                    .into(),
-                                    border_widths: Edges::default(),
-                                    border_color: gpui::transparent_black(),
-                                    border_style: BorderStyle::default(),
-                                });
+                                    Hsla {
+                                        a: 0.15,
+                                        ..indicator_color
+                                    },
+                                ));
+                                // Left edge line.
+                                window.paint_quad(fill(
+                                    Bounds::new(
+                                        point(bounds.origin.x + px(pv_left), bounds.origin.y),
+                                        size(px(1.0), px(height)),
+                                    ),
+                                    Hsla {
+                                        a: 0.7,
+                                        ..indicator_color
+                                    },
+                                ));
+                                // Right edge line (only if wide enough to not overlap left).
+                                if pv_width > 3.0 {
+                                    window.paint_quad(fill(
+                                        Bounds::new(
+                                            point(
+                                                bounds.origin.x + px(pv_left + pv_width - 1.0),
+                                                bounds.origin.y,
+                                            ),
+                                            size(px(1.0), px(height)),
+                                        ),
+                                        Hsla {
+                                            a: 0.7,
+                                            ..indicator_color
+                                        },
+                                    ));
+                                }
 
                                 // 6. ALL cursor markers (not just active)
                                 for cursor in &ts.cursor_state.cursors {
