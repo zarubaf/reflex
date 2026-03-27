@@ -782,20 +782,14 @@ impl AppView {
             let center = DockItem::tabs(center_tabs, &weak, window, cx);
             dock_area.set_center(center, window, cx);
 
-            // Only set a dock if there are buffer panels or a log panel to show.
+            // Build dock with buffer panels + separate log tab.
             if !buffers.is_empty() {
-                // Build one dock item per buffer panel. The last one also gets the log tab.
                 let mut dock_items: Vec<DockItem> = Vec::new();
-                for (i, bp) in buffers.iter().enumerate() {
-                    if i == buffers.len() - 1 {
-                        // Group last buffer with the log panel as tabs.
-                        let tabs: Vec<Arc<dyn PanelView>> =
-                            vec![Arc::new(bp.clone()), Arc::new(lp.clone())];
-                        dock_items.push(DockItem::tabs(tabs, &weak, window, cx));
-                    } else {
-                        dock_items.push(DockItem::tab(bp.clone(), &weak, window, cx));
-                    }
+                for bp in &buffers {
+                    dock_items.push(DockItem::tab(bp.clone(), &weak, window, cx));
                 }
+                // Log panel as its own separate section.
+                dock_items.push(DockItem::tab(lp.clone(), &weak, window, cx));
 
                 let dock_split = match placement {
                     DockPlacement::Bottom => DockItem::h_split(dock_items, &weak, window, cx),
