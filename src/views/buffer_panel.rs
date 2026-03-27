@@ -102,26 +102,7 @@ impl Render for BufferPanel {
                     .child("Slot")
                     .into_any_element(),
             );
-            for (i, name) in field_names.iter().enumerate() {
-                let type_str = field_type_str(field_types[i]);
-                header_children.push(
-                    div()
-                        .flex_1()
-                        .min_w(px(60.0))
-                        .text_color(colors::TEXT_DIMMED)
-                        .child(format!("{} ({})", name, type_str))
-                        .into_any_element(),
-                );
-            }
-            let header = div()
-                .id("buf-header")
-                .flex()
-                .gap_1()
-                .px_2()
-                .py(px(2.0))
-                .border_b_1()
-                .border_color(colors::GRID_LINE)
-                .children(header_children);
+            // No column headers — layout is: [ready dot] slot stage disasm
 
             // Slot rows — show: ready dot | slot | disasm | stage
             let ts = self.state.read(cx);
@@ -152,20 +133,12 @@ impl Render for BufferPanel {
 
                     let mut row_children: Vec<AnyElement> = Vec::new();
 
-                    // Ready dot first (find Bool field).
+                    // Ready dot first (find Bool field in field_types/field_values).
                     let ready_val = field_types
                         .iter()
                         .enumerate()
                         .find(|(_, ft)| **ft == 0x09)
-                        .and_then(|(fi, _)| field_values.get(fi + 1)) // +1 because field_types doesn't include entity_id
-                        .or_else(|| {
-                            // Check if any field_value corresponds to a Bool type
-                            field_types
-                                .iter()
-                                .zip(field_values.iter().skip(1))
-                                .find(|(ft, _)| **ft == 0x09)
-                                .map(|(_, v)| v)
-                        });
+                        .and_then(|(fi, _)| field_values.get(fi));
                     if let Some(&ready) = ready_val {
                         let dot_color = if ready != 0 {
                             Hsla {
@@ -278,7 +251,6 @@ impl Render for BufferPanel {
                             buf.name, occupied, capacity, cursor_cycle
                         )),
                 )
-                .child(header)
                 .child(
                     div()
                         .id(("buf-scroll", self.buffer_idx))
