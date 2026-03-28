@@ -543,7 +543,8 @@ impl Render for MinimapView {
                         }
                         MinimapDrag::ResizeLeft => {
                             let (_, cr_end) = ts.effective_counter_range();
-                            let new_start = mouse_cycle.clamp(0.0, cr_end as f64 - 10.0) as u32;
+                            let max_start = (cr_end as f64 - 10.0).max(0.0);
+                            let new_start = mouse_cycle.clamp(0.0, max_start) as u32;
                             state.update(cx, |ts, cx| {
                                 ts.counter_range = Some((new_start, cr_end));
                                 cx.notify();
@@ -551,8 +552,8 @@ impl Render for MinimapView {
                         }
                         MinimapDrag::ResizeRight => {
                             let (cr_start, _) = ts.effective_counter_range();
-                            let new_end =
-                                mouse_cycle.clamp(cr_start as f64 + 10.0, max_cycle as f64) as u32;
+                            let min_end = (cr_start as f64 + 10.0).min(max_cycle as f64);
+                            let new_end = mouse_cycle.clamp(min_end, max_cycle as f64) as u32;
                             state.update(cx, |ts, cx| {
                                 ts.counter_range = Some((cr_start, new_end));
                                 cx.notify();

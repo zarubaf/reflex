@@ -231,6 +231,8 @@ impl TraceState {
         self.viewport.max_row = trace.row_count();
         self.viewport.clamp();
         self.trace = trace;
+        // Reset counter range to full trace when loading new file
+        self.counter_range = None;
     }
 
     /// Record a frame and update FPS.
