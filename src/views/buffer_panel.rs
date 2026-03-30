@@ -4,24 +4,6 @@ use gpui::*;
 use crate::app::TraceState;
 use crate::theme::colors;
 
-/// Map uscope FieldType raw u8 to display string.
-fn field_type_str(ft: u8) -> &'static str {
-    match ft {
-        0x01 => "U8",
-        0x02 => "U16",
-        0x03 => "U32",
-        0x04 => "U64",
-        0x05 => "I8",
-        0x06 => "I16",
-        0x07 => "I32",
-        0x08 => "I64",
-        0x09 => "Bool",
-        0x0A => "Str",
-        0x0B => "Enum",
-        _ => "?",
-    }
-}
-
 /// A dynamic buffer panel that displays per-cycle buffer state from uscope.
 ///
 /// Created once per `BufferInfo` entry in `PipelineTrace::buffers`.
@@ -89,7 +71,6 @@ impl Render for BufferPanel {
         let content = if let Some(buf) = ts.trace.buffers.get(self.buffer_idx) {
             let occupied = self.cached_slots.len();
             let capacity = buf.capacity;
-            let field_names: Vec<String> = buf.fields.iter().map(|(n, _)| n.clone()).collect();
             let field_types: Vec<u8> = buf.fields.iter().map(|(_, ft)| *ft).collect();
 
             // Header row: column names
@@ -120,7 +101,6 @@ impl Render for BufferPanel {
                         .map(|r| ts.trace.instructions[r].disasm.clone())
                         .unwrap_or_else(|| format!("entity {}", entity_id));
                     let stage_name = instr_row.and_then(|r| {
-                        let instr = &ts.trace.instructions[r];
                         let stages = ts.trace.stages_for(r);
                         stages
                             .iter()
@@ -275,41 +255,6 @@ impl Render for BufferPanel {
             .text_size(px(11.0))
             .font_family("Menlo")
             .child(content)
-    }
-}
-
-/// Format a field value for display based on its type.
-fn format_field_value(val: u64, field_type: Option<u8>) -> String {
-    match field_type {
-        // Bool
-        Some(0x09) => {
-            if val != 0 {
-                "true".to_string()
-            } else {
-                "false".to_string()
-            }
-        }
-        // U8 / I8 / Enum - small values, show decimal
-        Some(0x01) | Some(0x05) | Some(0x0B) => format!("{}", val as u8),
-        // U16 / I16
-        Some(0x02) | Some(0x06) => format!("{}", val as u16),
-        // U32 / I32 / StringRef - hex for large values, decimal for small
-        Some(0x03) | Some(0x07) | Some(0x0A) => {
-            if val > 0xFFFF {
-                format!("0x{:x}", val as u32)
-            } else {
-                format!("{}", val as u32)
-            }
-        }
-        // U64 / I64
-        Some(0x04) | Some(0x08) => {
-            if val > 0xFFFF {
-                format!("0x{:x}", val)
-            } else {
-                format!("{}", val)
-            }
-        }
-        _ => format!("{}", val),
     }
 }
 
