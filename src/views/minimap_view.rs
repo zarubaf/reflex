@@ -17,6 +17,10 @@ const MINIMAP_RADIUS: f32 = 6.0;
 const MIN_VIEWPORT_PX: f32 = 16.0;
 /// Minimum hit-test width for grabbing the viewport edges.
 const HANDLE_HIT_ZONE: f32 = 12.0;
+/// Minimum pixel width for bar mode; below this, snap to diamond.
+const INDICATOR_BAR_MIN_PX: f32 = 8.0;
+/// Half-width of the diamond indicator in pixels.
+const DIAMOND_HALF_W: f32 = 4.0;
 
 /// Accent color for viewport handles and trendline.
 const ACCENT: Hsla = Hsla {
@@ -26,13 +30,6 @@ const ACCENT: Hsla = Hsla {
     a: 1.0,
 };
 
-/// Trendline fill color — brighter and more opaque than before.
-const TRENDLINE_FILL: Hsla = Hsla {
-    h: 210.0 / 360.0,
-    s: 0.55,
-    l: 0.50,
-    a: 0.50,
-};
 
 /// Dimmed trendline (outside viewport selection).
 const TRENDLINE_DIM: Hsla = Hsla {
@@ -266,36 +263,6 @@ impl Render for MinimapView {
                                         window,
                                     );
 
-                                    // Paint bright trendline clipped to viewport
-                                    let vp = &ts.viewport;
-                                    let (vis_start, vis_end) = vp.visible_cycle_range();
-                                    let vp_left_px =
-                                        (vis_start as f64 / max_cycle as f64) as f32 * width;
-                                    let vp_right_px =
-                                        (vis_end as f64 / max_cycle as f64) as f32 * width;
-                                    let vp_width_px =
-                                        (vp_right_px - vp_left_px).max(MIN_VIEWPORT_PX);
-
-                                    let clip_bounds = Bounds::new(
-                                        point(bounds.origin.x + px(vp_left_px), bounds.origin.y),
-                                        size(px(vp_width_px), px(height)),
-                                    );
-                                    window.with_content_mask(
-                                        Some(ContentMask {
-                                            bounds: clip_bounds,
-                                        }),
-                                        |window| {
-                                            paint_trendline_cached(
-                                                &cache.data,
-                                                cache.global_max,
-                                                &bounds,
-                                                width,
-                                                height,
-                                                TRENDLINE_FILL,
-                                                window,
-                                            );
-                                        },
-                                    );
                                 }
 
                                 // 2. Compute counter range rectangle (independent from pipeline)
@@ -348,50 +315,92 @@ impl Render for MinimapView {
                                     border_style: BorderStyle::default(),
                                 });
 
-                                // 5. Pipeline viewport indicator — bright center line
-                                // with small bottom bar. Shows where the pipeline is
-                                // within the counter range.
+                                // 5. Pipeline viewport indicator — bar when wide,
+                                // vertical line + small center diamond when narrow.
                                 let pvp = &ts.viewport;
                                 let (pv_start, pv_end) = pvp.visible_cycle_range();
                                 let pv_left = ((pv_start as f64 / max_cycle as f64) as f32 * width)
                                     .clamp(0.0, width);
                                 let pv_right = ((pv_end as f64 / max_cycle as f64) as f32 * width)
                                     .clamp(0.0, width);
-                                let pv_center = ((pv_left + pv_right) / 2.0).clamp(0.0, width);
-                                let pv_width = (pv_right - pv_left).max(2.0).min(width - pv_left);
+                                let pv_center = (pv_left + pv_right) / 2.0;
+                                let pv_width = pv_right - pv_left;
+                                // Soft green/teal — distinct from amber cursors and blue counter range.
                                 let indicator_color = Hsla {
-                                    h: 40.0 / 360.0,
-                                    s: 0.8,
+                                    h: 160.0 / 360.0,
+                                    s: 0.6,
                                     l: 0.55,
-                                    a: 0.9,
+                                    a: 1.0,
                                 };
-                                // Bottom bar showing the pipeline extent.
-                                let bar_h = 4.0;
-                                window.paint_quad(PaintQuad {
-                                    bounds: Bounds::new(
-                                        point(
-                                            bounds.origin.x + px(pv_left),
-                                            bounds.origin.y + px(height - bar_h),
+
+                                if pv_width >= INDICATOR_BAR_MIN_PX {
+                                    // Bar mode: translucent fill + crisp edge lines.
+                                    window.paint_quad(fill(
+                                        Bounds::new(
+                                            point(bounds.origin.x + px(pv_left), bounds.origin.y),
+                                            size(px(pv_width), px(height)),
                                         ),
-                                        size(px(pv_width), px(bar_h)),
-                                    ),
-                                    corner_radii: Corners::all(px(2.0)),
-                                    background: indicator_color.into(),
-                                    border_widths: Edges::default(),
-                                    border_color: gpui::transparent_black(),
-                                    border_style: BorderStyle::default(),
-                                });
-                                // Thin center line extending upward for visibility.
-                                window.paint_quad(fill(
-                                    Bounds::new(
-                                        point(bounds.origin.x + px(pv_center), bounds.origin.y),
-                                        size(px(1.0), px(height)),
-                                    ),
-                                    Hsla {
-                                        a: 0.5,
-                                        ..indicator_color
-                                    },
-                                ));
+                                        Hsla {
+                                            a: 0.15,
+                                            ..indicator_color
+                                        },
+                                    ));
+                                    for edge_x in [pv_left, pv_right - 1.0] {
+                                        window.paint_quad(fill(
+                                            Bounds::new(
+                                                point(
+                                                    bounds.origin.x + px(edge_x),
+                                                    bounds.origin.y,
+                                                ),
+                                                size(px(1.0), px(height)),
+                                            ),
+                                            Hsla {
+                                                a: 0.6,
+                                                ..indicator_color
+                                            },
+                                        ));
+                                    }
+                                } else {
+                                    // Narrow mode: thin vertical line + small diamond at center.
+                                    let cx_px = bounds.origin.x + px(pv_center);
+                                    let mid_y = bounds.origin.y + px(height / 2.0);
+
+                                    // Vertical line, full height.
+                                    window.paint_quad(fill(
+                                        Bounds::new(
+                                            point(cx_px, bounds.origin.y),
+                                            size(px(1.0), px(height)),
+                                        ),
+                                        Hsla {
+                                            a: 0.6,
+                                            ..indicator_color
+                                        },
+                                    ));
+
+                                    // Small diamond at vertical center.
+                                    let mut path = Path::new(point(
+                                        cx_px,
+                                        mid_y - px(DIAMOND_HALF_W),
+                                    ));
+                                    path.line_to(point(cx_px + px(DIAMOND_HALF_W), mid_y));
+                                    path.line_to(point(
+                                        cx_px,
+                                        mid_y + px(DIAMOND_HALF_W),
+                                    ));
+                                    path.line_to(point(cx_px - px(DIAMOND_HALF_W), mid_y));
+                                    path.line_to(point(
+                                        cx_px,
+                                        mid_y - px(DIAMOND_HALF_W),
+                                    ));
+
+                                    window.paint_path(
+                                        path,
+                                        Hsla {
+                                            a: 0.8,
+                                            ..indicator_color
+                                        },
+                                    );
+                                }
 
                                 // 6. ALL cursor markers (not just active)
                                 for cursor in &ts.cursor_state.cursors {
