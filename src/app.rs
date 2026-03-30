@@ -372,6 +372,68 @@ impl TraceState {
             .counter_downsample_minmax(counter_idx, start_cycle, end_cycle, bucket_count)
     }
 
+    /// Mipmap-only counter downsampling for overview displays (minimap).
+    /// Always uses the mipmap for a consistent look regardless of trace size.
+    pub fn counter_downsample_overview(
+        &self,
+        counter_idx: usize,
+        start_cycle: u32,
+        end_cycle: u32,
+        bucket_count: usize,
+    ) -> Vec<(u64, u64)> {
+        if bucket_count == 0 || start_cycle >= end_cycle {
+            return Vec::new();
+        }
+        if let Some(ref summary) = self.trace_summary {
+            if counter_idx < summary.counters.len() {
+                let mipmap = &summary.counters[counter_idx];
+                let range_cycles = end_cycle - start_cycle;
+                let cycles_per_bucket = range_cycles as f64 / bucket_count as f64;
+                let base = summary.base_interval_cycles as f64;
+                let fan = summary.fan_out as f64;
+                let mut level = 0usize;
+                let mut level_interval = base;
+                while level + 1 < mipmap.levels.len() && level_interval * fan <= cycles_per_bucket {
+                    level += 1;
+                    level_interval *= fan;
+                }
+                let entries = &mipmap.levels[level];
+                if entries.is_empty() {
+                    return vec![(0, 0); bucket_count];
+                }
+                let level_interval = summary.base_interval_cycles as f64
+                    * (summary.fan_out as f64).powi(level as i32);
+                let mut result = Vec::with_capacity(bucket_count);
+                for b in 0..bucket_count {
+                    let b_start = start_cycle as f64 + b as f64 * cycles_per_bucket;
+                    let b_end = b_start + cycles_per_bucket;
+                    let entry_start = (b_start / level_interval) as usize;
+                    let entry_end = ((b_end / level_interval).ceil() as usize).min(entries.len());
+                    let mut total_sum = 0.0f64;
+                    let mut total_cycles = 0.0f64;
+                    for (ei, entry) in entries[entry_start..entry_end].iter().enumerate() {
+                        let e_start = (entry_start + ei) as f64 * level_interval;
+                        let e_end = e_start + level_interval;
+                        let overlap_start = b_start.max(e_start);
+                        let overlap_end = b_end.min(e_end);
+                        let overlap = (overlap_end - overlap_start).max(0.0);
+                        let entry_frac = overlap / level_interval;
+                        total_sum += entry.sum as f64 * entry_frac;
+                        total_cycles += overlap;
+                    }
+                    let avg_rate = if total_cycles > 0.0 {
+                        (total_sum / total_cycles * level_interval) as u64
+                    } else {
+                        0
+                    };
+                    result.push((avg_rate, avg_rate));
+                }
+                return result;
+            }
+        }
+        vec![(0, 0); bucket_count]
+    }
+
     pub fn load_trace(
         &mut self,
         trace: PipelineTrace,
