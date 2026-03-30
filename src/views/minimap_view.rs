@@ -30,22 +30,6 @@ const ACCENT: Hsla = Hsla {
     a: 1.0,
 };
 
-/// Dimmed trendline (outside viewport selection).
-const TRENDLINE_DIM: Hsla = Hsla {
-    h: 210.0 / 360.0,
-    s: 0.30,
-    l: 0.35,
-    a: 0.30,
-};
-
-/// Bright trendline (inside viewport selection).
-const TRENDLINE_BRIGHT: Hsla = Hsla {
-    h: 210.0 / 360.0,
-    s: 0.55,
-    l: 0.50,
-    a: 0.55,
-};
-
 fn px_val(p: Pixels) -> f32 {
     f32::from(p)
 }
@@ -203,7 +187,7 @@ impl Render for MinimapView {
                                 if needs_update {
                                     let ts = state.read(cx);
                                     if counter_idx < ts.trace.counters.len() {
-                                        let data = ts.counter_downsample_overview(
+                                        let data = ts.counter_downsample(
                                             counter_idx,
                                             0,
                                             max_cycle,
@@ -256,81 +240,18 @@ impl Render for MinimapView {
 
                             // Clip all painting to the canvas bounds.
                             window.with_content_mask(Some(ContentMask { bounds }), |window| {
-                                // 1. Paint trendline from cache (computed in layout closure).
-                                // Bright inside counter range, dim outside.
+                                // 1. Paint trendline from cache — uniform color, full width.
                                 let v = view.read(cx);
                                 if let Some(cache) = &v.trendline_cache {
-                                    let (cr_s, cr_e) = ts.effective_counter_range();
-                                    let mc = max_cycle.max(1) as f64;
-                                    let cr_left = (cr_s as f64 / mc) as f32 * width;
-                                    let cr_right = ((cr_e as f64 / mc) as f32 * width).min(width);
-
-                                    // Dim trendline outside counter range (left).
-                                    if cr_left > 0.0 {
-                                        let clip = Bounds::new(
-                                            bounds.origin,
-                                            size(px(cr_left), px(height)),
-                                        );
-                                        window.with_content_mask(
-                                            Some(ContentMask { bounds: clip }),
-                                            |window| {
-                                                paint_trendline_cached(
-                                                    &cache.data,
-                                                    cache.global_max,
-                                                    &bounds,
-                                                    width,
-                                                    height,
-                                                    TRENDLINE_DIM,
-                                                    window,
-                                                );
-                                            },
-                                        );
-                                    }
-
-                                    // Bright trendline inside counter range.
-                                    let cr_w = cr_right - cr_left;
-                                    if cr_w > 0.0 {
-                                        let clip = Bounds::new(
-                                            point(bounds.origin.x + px(cr_left), bounds.origin.y),
-                                            size(px(cr_w), px(height)),
-                                        );
-                                        window.with_content_mask(
-                                            Some(ContentMask { bounds: clip }),
-                                            |window| {
-                                                paint_trendline_cached(
-                                                    &cache.data,
-                                                    cache.global_max,
-                                                    &bounds,
-                                                    width,
-                                                    height,
-                                                    TRENDLINE_BRIGHT,
-                                                    window,
-                                                );
-                                            },
-                                        );
-                                    }
-
-                                    // Dim trendline outside counter range (right).
-                                    if cr_right < width {
-                                        let clip = Bounds::new(
-                                            point(bounds.origin.x + px(cr_right), bounds.origin.y),
-                                            size(px(width - cr_right), px(height)),
-                                        );
-                                        window.with_content_mask(
-                                            Some(ContentMask { bounds: clip }),
-                                            |window| {
-                                                paint_trendline_cached(
-                                                    &cache.data,
-                                                    cache.global_max,
-                                                    &bounds,
-                                                    width,
-                                                    height,
-                                                    TRENDLINE_DIM,
-                                                    window,
-                                                );
-                                            },
-                                        );
-                                    }
+                                    paint_trendline_cached(
+                                        &cache.data,
+                                        cache.global_max,
+                                        &bounds,
+                                        width,
+                                        height,
+                                        Hsla { a: 0.35, ..ACCENT },
+                                        window,
+                                    );
                                 }
 
                                 // 2. Compute counter range rectangle (independent from pipeline)
@@ -343,34 +264,7 @@ impl Render for MinimapView {
                                     .max(MIN_VIEWPORT_PX)
                                     .min(width - vp_left);
 
-                                // 3. Dimmed overlays outside counter range
-                                let dim_color = Hsla {
-                                    h: 0.0,
-                                    s: 0.0,
-                                    l: 0.0,
-                                    a: 0.20,
-                                };
-                                if vp_left > 0.0 {
-                                    window.paint_quad(fill(
-                                        Bounds::new(bounds.origin, size(px(vp_left), px(height))),
-                                        dim_color,
-                                    ));
-                                }
-                                let right_start = vp_left + vp_width;
-                                if right_start < width {
-                                    window.paint_quad(fill(
-                                        Bounds::new(
-                                            point(
-                                                bounds.origin.x + px(right_start),
-                                                bounds.origin.y,
-                                            ),
-                                            size(px(width - right_start), px(height)),
-                                        ),
-                                        dim_color,
-                                    ));
-                                }
-
-                                // 4. Viewport border
+                                // 3. Viewport border
                                 window.paint_quad(PaintQuad {
                                     bounds: Bounds::new(
                                         point(bounds.origin.x + px(vp_left), bounds.origin.y),

@@ -474,15 +474,24 @@ pub fn open_uscope(
     let segment_index = build_segment_index_from_file(path_str, &reader, ids.period_ps)?;
 
     // Read the TraceSummary from the Reader (embedded in the file by gen-uscope).
-    // If not embedded, compute it on-the-fly by replaying segments.
+    // If not embedded, compute it on-the-fly for small traces only (≤100 segments).
+    // Large traces without TSUM proceed without summary to avoid blocking on open.
     let trace_summary = reader.trace_summary().cloned().or_else(|| {
-        eprintln!("No embedded TraceSummary; computing from trace data...");
-        match uscope::summary::compute_trace_summary(&mut reader, ids.period_ps) {
-            Ok(summary) => Some(summary),
-            Err(e) => {
-                eprintln!("Warning: failed to compute TraceSummary: {}", e);
-                None
+        if reader.segment_count() <= 100 {
+            eprintln!("No embedded TraceSummary; computing from trace data...");
+            match uscope::summary::compute_trace_summary(&mut reader, ids.period_ps) {
+                Ok(summary) => Some(summary),
+                Err(e) => {
+                    eprintln!("Warning: failed to compute TraceSummary: {}", e);
+                    None
+                }
             }
+        } else {
+            eprintln!(
+                "No embedded TraceSummary; trace too large to compute on-the-fly ({} segments)",
+                reader.segment_count()
+            );
+            None
         }
     });
 
