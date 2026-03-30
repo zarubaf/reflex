@@ -362,10 +362,24 @@ pub struct UscopeContext {
     flush_event_id: u16,
     /// Instruction decoder (built once, reused for all segment loads).
     decoder: Option<Decoder>,
+    /// Map from counter storage_id → index into PipelineTrace::counters.
+    counter_storage_map: HashMap<u16, usize>,
+    /// Number of counters.
+    num_counters: usize,
 }
 
 impl UscopeContext {
-    fn from_ids(ids: &CpuProtocolIds, stage_name_indices: Vec<u16>) -> Self {
+    fn from_ids(
+        ids: &CpuProtocolIds,
+        stage_name_indices: Vec<u16>,
+        counter_storages: &[(u16, String)],
+    ) -> Self {
+        let counter_storage_map: HashMap<u16, usize> = counter_storages
+            .iter()
+            .enumerate()
+            .map(|(i, (sid, _))| (*sid, i))
+            .collect();
+        let num_counters = counter_storages.len();
         Self {
             stage_name_indices,
             period_ps: ids.period_ps,
@@ -382,6 +396,8 @@ impl UscopeContext {
             dependency_event_id: ids.dependency_event_id,
             flush_event_id: ids.flush_event_id,
             decoder: build_rv64gc_decoder(),
+            counter_storage_map,
+            num_counters,
         }
     }
 }
@@ -409,7 +425,7 @@ pub fn open_uscope(
         .to_str()
         .ok_or_else(|| TraceError::UnsupportedFormat("invalid path encoding".into()))?;
 
-    let reader = Reader::open(path_str).map_err(TraceError::Io)?;
+    let mut reader = Reader::open(path_str).map_err(TraceError::Io)?;
     let ids = resolve_cpu_protocol(&reader)?;
 
     let mut trace = PipelineTrace::new();
@@ -469,18 +485,7 @@ pub fn open_uscope(
         })
         .collect();
 
-    // Initialize counter series with names only (no samples — mipmap provides data).
-    let counter_series: Vec<CounterSeries> = counter_storages
-        .iter()
-        .map(|(_, name)| CounterSeries {
-            name: name.clone(),
-            samples: Vec::new(),
-            default_mode: CounterDisplayMode::Total,
-        })
-        .collect();
-
     // Build SegmentIndex from the file's segment table (no replay needed).
-    // Read the segment table by re-opening the file and parsing section entries.
     let segment_index = build_segment_index_from_file(path_str, &reader, ids.period_ps)?;
 
     // Read the TraceSummary from the Reader (embedded in the file by gen-uscope).
@@ -494,13 +499,66 @@ pub fn open_uscope(
         trace.total_instruction_count = 0;
     }
 
+    // For small traces, replay segments to get per-cycle counter samples.
+    // For large traces, the mipmap provides sufficient resolution.
+    let max_cycle = (reader.header().total_time_ps / ids.period_ps) as u32;
+    let is_small_trace = max_cycle <= 32 * 1024; // ≤32 mipmap buckets
+    let counter_series: Vec<CounterSeries> = if is_small_trace && !counter_storages.is_empty() {
+        let counter_map: HashMap<u16, usize> = counter_storages
+            .iter()
+            .enumerate()
+            .map(|(i, (sid, _))| (*sid, i))
+            .collect();
+        let mut series: Vec<CounterSeries> = counter_storages
+            .iter()
+            .map(|(_, name)| CounterSeries {
+                name: name.clone(),
+                samples: Vec::new(),
+                default_mode: CounterDisplayMode::Total,
+            })
+            .collect();
+        let mut accum: Vec<u64> = vec![0; counter_storages.len()];
+        for seg_idx in 0..reader.segment_count() {
+            if let Ok((_storages, items)) = reader.segment_replay(seg_idx) {
+                for item in items {
+                    if let uscope::state::TimedItem::Op(op) = item {
+                        if op.action == DA_SLOT_ADD {
+                            if let Some(&ci) = counter_map.get(&op.storage_id) {
+                                let cycle = (op.time_ps / ids.period_ps) as u32;
+                                accum[ci] = accum[ci].wrapping_add(op.value);
+                                series[ci].samples.push((cycle, accum[ci]));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Final sample at trace end.
+        for (ci, s) in series.iter_mut().enumerate() {
+            let last_c = s.samples.last().map(|(c, _)| *c).unwrap_or(0);
+            if last_c < max_cycle {
+                s.samples.push((max_cycle, accum[ci]));
+            }
+        }
+        series
+    } else {
+        counter_storages
+            .iter()
+            .map(|(_, name)| CounterSeries {
+                name: name.clone(),
+                samples: Vec::new(),
+                default_mode: CounterDisplayMode::Total,
+            })
+            .collect()
+    };
+
     trace.counters = counter_series;
     trace.buffers = buffer_infos;
 
     // Set max_cycle from header total_time_ps (covers all segments).
     trace.max_cycle_override = Some((reader.header().total_time_ps / ids.period_ps) as u32);
 
-    let uctx = UscopeContext::from_ids(&ids, stage_name_indices);
+    let uctx = UscopeContext::from_ids(&ids, stage_name_indices, &counter_storages);
 
     Ok((reader, trace, segment_index, uctx, trace_summary))
 }
@@ -593,6 +651,9 @@ pub struct SegmentLoadResult {
     pub instructions: Vec<InstructionData>,
     pub stages: Vec<StageSpan>,
     pub dependencies: Vec<Dependency>,
+    /// Per-counter (cycle, cumulative_value) samples extracted during replay.
+    /// Indexed by counter index (same order as `PipelineTrace::counters`).
+    pub counter_samples: Vec<Vec<(u32, u64)>>,
 }
 
 /// Load instructions from specific segments.
@@ -611,6 +672,11 @@ pub fn load_segments(
     let mut next_reflex_id: u32 = 0;
     let mut dependencies: Vec<Dependency> = Vec::new();
 
+    // Counter accumulators for per-cycle sample extraction.
+    let mut counter_accum: Vec<u64> = vec![0; ctx.num_counters];
+    let mut counter_samples: Vec<Vec<(u32, u64)>> =
+        (0..ctx.num_counters).map(|_| Vec::new()).collect();
+
     for &seg_idx in segment_indices {
         let (_storages, items) = reader.segment_replay(seg_idx).map_err(TraceError::Io)?;
 
@@ -618,6 +684,14 @@ pub fn load_segments(
             match item {
                 TimedItem::Op(op) => {
                     let cycle = (op.time_ps / ctx.period_ps) as u32;
+
+                    // Extract counter deltas.
+                    if op.action == DA_SLOT_ADD {
+                        if let Some(&ci) = ctx.counter_storage_map.get(&op.storage_id) {
+                            counter_accum[ci] = counter_accum[ci].wrapping_add(op.value);
+                            counter_samples[ci].push((cycle, counter_accum[ci]));
+                        }
+                    }
 
                     if op.storage_id != ctx.entities_storage_id {
                         continue;
@@ -809,6 +883,7 @@ pub fn load_segments(
         instructions,
         stages,
         dependencies,
+        counter_samples,
     })
 }
 
