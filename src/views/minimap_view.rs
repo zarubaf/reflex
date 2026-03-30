@@ -30,7 +30,6 @@ const ACCENT: Hsla = Hsla {
     a: 1.0,
 };
 
-
 /// Dimmed trendline (outside viewport selection).
 const TRENDLINE_DIM: Hsla = Hsla {
     h: 210.0 / 360.0,
@@ -60,6 +59,8 @@ struct TrendlineCache {
     counter_idx: usize,
     max_cycle: u32,
     bucket_count: usize,
+    /// Number of per-cycle samples at cache time (invalidates when segments load).
+    sample_count: usize,
     /// Pre-computed global max for normalization.
     global_max: u64,
     data: Vec<(u64, u64)>,
@@ -182,6 +183,12 @@ impl Render for MinimapView {
                             let selected_counter = view.read(cx).selected_counter;
                             let new_cache = if let Some(counter_idx) = selected_counter {
                                 let bucket_count = (width as usize).min(max_cycle as usize).max(1);
+                                let ts = state.read(cx);
+                                let sample_count = if counter_idx < ts.trace.counters.len() {
+                                    ts.trace.counters[counter_idx].samples.len()
+                                } else {
+                                    0
+                                };
                                 let needs_update = {
                                     let v = view.read(cx);
                                     match &v.trendline_cache {
@@ -189,6 +196,7 @@ impl Render for MinimapView {
                                             c.counter_idx != counter_idx
                                                 || c.max_cycle != max_cycle
                                                 || c.bucket_count != bucket_count
+                                                || c.sample_count != sample_count
                                         }
                                         None => true,
                                     }
@@ -212,6 +220,7 @@ impl Render for MinimapView {
                                             counter_idx,
                                             max_cycle,
                                             bucket_count,
+                                            sample_count,
                                             global_max,
                                             data,
                                         })
@@ -262,7 +271,6 @@ impl Render for MinimapView {
                                         TRENDLINE_DIM,
                                         window,
                                     );
-
                                 }
 
                                 // 2. Compute counter range rectangle (independent from pipeline)
@@ -378,20 +386,12 @@ impl Render for MinimapView {
                                     ));
 
                                     // Small diamond at vertical center.
-                                    let mut path = Path::new(point(
-                                        cx_px,
-                                        mid_y - px(DIAMOND_HALF_W),
-                                    ));
+                                    let mut path =
+                                        Path::new(point(cx_px, mid_y - px(DIAMOND_HALF_W)));
                                     path.line_to(point(cx_px + px(DIAMOND_HALF_W), mid_y));
-                                    path.line_to(point(
-                                        cx_px,
-                                        mid_y + px(DIAMOND_HALF_W),
-                                    ));
+                                    path.line_to(point(cx_px, mid_y + px(DIAMOND_HALF_W)));
                                     path.line_to(point(cx_px - px(DIAMOND_HALF_W), mid_y));
-                                    path.line_to(point(
-                                        cx_px,
-                                        mid_y - px(DIAMOND_HALF_W),
-                                    ));
+                                    path.line_to(point(cx_px, mid_y - px(DIAMOND_HALF_W)));
 
                                     window.paint_path(
                                         path,
