@@ -409,7 +409,7 @@ pub fn open_uscope(
         .to_str()
         .ok_or_else(|| TraceError::UnsupportedFormat("invalid path encoding".into()))?;
 
-    let mut reader = Reader::open(path_str).map_err(TraceError::Io)?;
+    let reader = Reader::open(path_str).map_err(TraceError::Io)?;
     let ids = resolve_cpu_protocol(&reader)?;
 
     let mut trace = PipelineTrace::new();
@@ -469,85 +469,30 @@ pub fn open_uscope(
         })
         .collect();
 
+    // Initialize counter series with names only (no samples — mipmap provides data).
+    let counter_series: Vec<CounterSeries> = counter_storages
+        .iter()
+        .map(|(_, name)| CounterSeries {
+            name: name.clone(),
+            samples: Vec::new(),
+            default_mode: CounterDisplayMode::Total,
+        })
+        .collect();
+
     // Build SegmentIndex from the file's segment table (no replay needed).
     // Read the segment table by re-opening the file and parsing section entries.
     let segment_index = build_segment_index_from_file(path_str, &reader, ids.period_ps)?;
 
     // Read the TraceSummary from the Reader (embedded in the file by gen-uscope).
-    // If not embedded, compute it on-the-fly by replaying segments.
-    let trace_summary = reader.trace_summary().cloned().or_else(|| {
-        eprintln!("No embedded TraceSummary; computing from trace data...");
-        match uscope::summary::compute_trace_summary(&mut reader, ids.period_ps) {
-            Ok(summary) => Some(summary),
-            Err(e) => {
-                eprintln!("Warning: failed to compute TraceSummary: {}", e);
-                None
-            }
-        }
-    });
+    let trace_summary = reader.trace_summary().cloned();
 
     // Set total_instruction_count from the TraceSummary if available.
     if let Some(ref summary) = trace_summary {
         trace.total_instruction_count = summary.total_instructions as usize;
-    }
-
-    // When the mipmap is too coarse (trace fits in a single bucket), replay
-    // segments to extract per-cycle counter samples for precise rendering.
-    // For large traces the mipmap has enough resolution and we skip this.
-    let mipmap_coarse = trace_summary.as_ref().map_or(true, |s| {
-        let max_cycle = (reader.header().total_time_ps / ids.period_ps) as u32;
-        max_cycle <= s.base_interval_cycles
-    });
-
-    let counter_series: Vec<CounterSeries> = if mipmap_coarse && !counter_storages.is_empty() {
-        let counter_map: HashMap<u16, usize> = counter_storages
-            .iter()
-            .enumerate()
-            .map(|(i, (sid, _))| (*sid, i))
-            .collect();
-        let mut series: Vec<CounterSeries> = counter_storages
-            .iter()
-            .map(|(_, name)| CounterSeries {
-                name: name.clone(),
-                samples: Vec::new(),
-                default_mode: CounterDisplayMode::Total,
-            })
-            .collect();
-        let mut accum: Vec<u64> = vec![0; counter_storages.len()];
-
-        for seg_idx in 0..reader.segment_count() {
-            if let Ok((_storages, items)) = reader.segment_replay(seg_idx) {
-                for item in items {
-                    if let uscope::state::TimedItem::Op(op) = item {
-                        if op.action == DA_SLOT_ADD {
-                            if let Some(&ci) = counter_map.get(&op.storage_id) {
-                                let cycle = (op.time_ps / ids.period_ps) as u32;
-                                accum[ci] = accum[ci].wrapping_add(op.value);
-                                series[ci].samples.push((cycle, accum[ci]));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        let total_cycle = (reader.header().total_time_ps / ids.period_ps) as u32;
-        for (ci, s) in series.iter_mut().enumerate() {
-            let last_c = s.samples.last().map(|(c, _)| *c).unwrap_or(0);
-            if last_c < total_cycle {
-                s.samples.push((total_cycle, accum[ci]));
-            }
-        }
-        series
     } else {
-        counter_storages
-            .iter()
-            .map(|(_, name)| CounterSeries {
-                name: name.clone(),
-                samples: Vec::new(),
-                default_mode: CounterDisplayMode::Total,
-            })
-            .collect()
-    };
+        eprintln!("Warning: no TraceSummary in file; instruction count unknown");
+        trace.total_instruction_count = 0;
+    }
 
     trace.counters = counter_series;
     trace.buffers = buffer_infos;
@@ -1142,9 +1087,14 @@ pub fn parse_uscope(path: &Path) -> Result<(PipelineTrace, Reader, SegmentIndex)
             }
         }
 
-        // Record this segment's cycle bounds.
+        // Record this segment's cycle bounds and store sparse counter samples.
         if seg_min_cycle <= seg_max_cycle {
             segment_index.segments.push((seg_min_cycle, seg_max_cycle));
+            for (counter_idx, series) in counter_series.iter_mut().enumerate() {
+                series
+                    .samples
+                    .push((seg_max_cycle, counter_accum[counter_idx]));
+            }
         } else {
             // Empty segment (no items): push a zero-width entry.
             segment_index.segments.push((0, 0));

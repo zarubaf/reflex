@@ -30,20 +30,13 @@ const ACCENT: Hsla = Hsla {
     a: 1.0,
 };
 
+
 /// Dimmed trendline (outside viewport selection).
 const TRENDLINE_DIM: Hsla = Hsla {
     h: 210.0 / 360.0,
     s: 0.30,
     l: 0.35,
     a: 0.30,
-};
-
-/// Bright trendline (inside viewport selection).
-const TRENDLINE_BRIGHT: Hsla = Hsla {
-    h: 210.0 / 360.0,
-    s: 0.55,
-    l: 0.50,
-    a: 0.55,
 };
 
 fn px_val(p: Pixels) -> f32 {
@@ -188,7 +181,7 @@ impl Render for MinimapView {
                             let max_cycle = state.read(cx).trace.max_cycle();
                             let selected_counter = view.read(cx).selected_counter;
                             let new_cache = if let Some(counter_idx) = selected_counter {
-                                let bucket_count = (width as usize).max(1);
+                                let bucket_count = (width as usize).min(max_cycle as usize).max(1);
                                 let needs_update = {
                                     let v = view.read(cx);
                                     match &v.trendline_cache {
@@ -203,7 +196,7 @@ impl Render for MinimapView {
                                 if needs_update {
                                     let ts = state.read(cx);
                                     if counter_idx < ts.trace.counters.len() {
-                                        let data = ts.counter_downsample_overview(
+                                        let data = ts.counter_downsample(
                                             counter_idx,
                                             0,
                                             max_cycle,
@@ -256,81 +249,20 @@ impl Render for MinimapView {
 
                             // Clip all painting to the canvas bounds.
                             window.with_content_mask(Some(ContentMask { bounds }), |window| {
-                                // 1. Paint trendline from cache (computed in layout closure).
-                                // Bright inside counter range, dim outside.
+                                // 1. Paint trendline from cache (computed in layout closure)
                                 let v = view.read(cx);
                                 if let Some(cache) = &v.trendline_cache {
-                                    let (cr_s, cr_e) = ts.effective_counter_range();
-                                    let mc = max_cycle.max(1) as f64;
-                                    let cr_left = (cr_s as f64 / mc) as f32 * width;
-                                    let cr_right = ((cr_e as f64 / mc) as f32 * width).min(width);
+                                    // Paint dim trendline across full width
+                                    paint_trendline_cached(
+                                        &cache.data,
+                                        cache.global_max,
+                                        &bounds,
+                                        width,
+                                        height,
+                                        TRENDLINE_DIM,
+                                        window,
+                                    );
 
-                                    // Dim trendline outside counter range (left).
-                                    if cr_left > 0.0 {
-                                        let clip = Bounds::new(
-                                            bounds.origin,
-                                            size(px(cr_left), px(height)),
-                                        );
-                                        window.with_content_mask(
-                                            Some(ContentMask { bounds: clip }),
-                                            |window| {
-                                                paint_trendline_cached(
-                                                    &cache.data,
-                                                    cache.global_max,
-                                                    &bounds,
-                                                    width,
-                                                    height,
-                                                    TRENDLINE_DIM,
-                                                    window,
-                                                );
-                                            },
-                                        );
-                                    }
-
-                                    // Bright trendline inside counter range.
-                                    let cr_w = cr_right - cr_left;
-                                    if cr_w > 0.0 {
-                                        let clip = Bounds::new(
-                                            point(bounds.origin.x + px(cr_left), bounds.origin.y),
-                                            size(px(cr_w), px(height)),
-                                        );
-                                        window.with_content_mask(
-                                            Some(ContentMask { bounds: clip }),
-                                            |window| {
-                                                paint_trendline_cached(
-                                                    &cache.data,
-                                                    cache.global_max,
-                                                    &bounds,
-                                                    width,
-                                                    height,
-                                                    TRENDLINE_BRIGHT,
-                                                    window,
-                                                );
-                                            },
-                                        );
-                                    }
-
-                                    // Dim trendline outside counter range (right).
-                                    if cr_right < width {
-                                        let clip = Bounds::new(
-                                            point(bounds.origin.x + px(cr_right), bounds.origin.y),
-                                            size(px(width - cr_right), px(height)),
-                                        );
-                                        window.with_content_mask(
-                                            Some(ContentMask { bounds: clip }),
-                                            |window| {
-                                                paint_trendline_cached(
-                                                    &cache.data,
-                                                    cache.global_max,
-                                                    &bounds,
-                                                    width,
-                                                    height,
-                                                    TRENDLINE_DIM,
-                                                    window,
-                                                );
-                                            },
-                                        );
-                                    }
                                 }
 
                                 // 2. Compute counter range rectangle (independent from pipeline)
@@ -348,7 +280,7 @@ impl Render for MinimapView {
                                     h: 0.0,
                                     s: 0.0,
                                     l: 0.0,
-                                    a: 0.20,
+                                    a: 0.45,
                                 };
                                 if vp_left > 0.0 {
                                     window.paint_quad(fill(
@@ -409,7 +341,7 @@ impl Render for MinimapView {
                                             size(px(pv_width), px(height)),
                                         ),
                                         Hsla {
-                                            a: 0.08,
+                                            a: 0.15,
                                             ..indicator_color
                                         },
                                     ));
@@ -446,12 +378,20 @@ impl Render for MinimapView {
                                     ));
 
                                     // Small diamond at vertical center.
-                                    let mut path =
-                                        Path::new(point(cx_px, mid_y - px(DIAMOND_HALF_W)));
+                                    let mut path = Path::new(point(
+                                        cx_px,
+                                        mid_y - px(DIAMOND_HALF_W),
+                                    ));
                                     path.line_to(point(cx_px + px(DIAMOND_HALF_W), mid_y));
-                                    path.line_to(point(cx_px, mid_y + px(DIAMOND_HALF_W)));
+                                    path.line_to(point(
+                                        cx_px,
+                                        mid_y + px(DIAMOND_HALF_W),
+                                    ));
                                     path.line_to(point(cx_px - px(DIAMOND_HALF_W), mid_y));
-                                    path.line_to(point(cx_px, mid_y - px(DIAMOND_HALF_W)));
+                                    path.line_to(point(
+                                        cx_px,
+                                        mid_y - px(DIAMOND_HALF_W),
+                                    ));
 
                                     window.paint_path(
                                         path,
