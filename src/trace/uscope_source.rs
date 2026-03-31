@@ -369,6 +369,10 @@ pub struct UscopeContext {
 }
 
 impl UscopeContext {
+    pub fn entities_storage_id(&self) -> u16 {
+        self.entities_storage_id
+    }
+
     fn from_ids(
         ids: &CpuProtocolIds,
         stage_name_indices: Vec<u16>,

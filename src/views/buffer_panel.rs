@@ -14,8 +14,8 @@ pub struct BufferPanel {
     buffer_idx: usize,
     /// Cached cycle for which `cached_slots` is valid.
     cached_cycle: u32,
-    /// Cached occupied slots: (slot_index, field_values).
-    cached_slots: Vec<(u16, Vec<u64>)>,
+    /// Cached occupied slots: (slot_index, field_values, entity_fields).
+    cached_slots: Vec<(u16, Vec<u64>, Vec<(String, u64)>)>,
 }
 
 impl BufferPanel {
@@ -92,7 +92,7 @@ impl Render for BufferPanel {
                 .cached_slots
                 .iter()
                 .enumerate()
-                .map(|(row_idx, (slot, field_values))| {
+                .map(|(row_idx, (slot, field_values, entity_fields))| {
                     let entity_id = field_values.first().copied().unwrap_or(0) as u32;
 
                     // Look up instruction details from loaded trace.
@@ -178,26 +178,15 @@ impl Render for BufferPanel {
                             .into_any_element(),
                     );
 
-                    // Extra fields (skip entity_id at index 0 and Bool/ready fields).
-                    for (fi, (name, ft)) in buf.fields.iter().enumerate() {
-                        if fi == 0 {
-                            continue; // entity_id already shown as disasm
-                        }
-                        if *ft == 0x09 {
-                            continue; // Bool already shown as ready dot
-                        }
-                        if let Some(&val) = field_values.get(fi) {
-                            if val == 0 {
-                                continue; // skip zero-valued fields to reduce clutter
-                            }
-                            row_children.push(
-                                div()
-                                    .flex_shrink_0()
-                                    .text_color(colors::TEXT_DIMMED)
-                                    .child(format!("{}={}", name, val))
-                                    .into_any_element(),
-                            );
-                        }
+                    // Entity fields from the entities storage (rbid, fpb_id, etc.).
+                    for (name, val) in entity_fields {
+                        row_children.push(
+                            div()
+                                .flex_shrink_0()
+                                .text_color(colors::TEXT_DIMMED)
+                                .child(format!("{}={}", name, val))
+                                .into_any_element(),
+                        );
                     }
 
                     let state = self.state.clone();
