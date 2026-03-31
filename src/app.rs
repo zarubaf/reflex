@@ -556,7 +556,16 @@ impl TraceState {
     /// `field_values` contains the raw u64 value for every field in the buffer.
     ///
     /// Returns an empty vec if no reader is available or the query fails.
-    pub fn query_buffer_state(&mut self, buffer_idx: usize, cycle: u32) -> Vec<(u16, Vec<u64>)> {
+    /// Query buffer storage state at a given cycle.
+    ///
+    /// Returns a Vec of `(slot_index, field_values, entity_fields)` for occupied slots.
+    /// `entity_fields` contains `(name, value)` pairs from the entities storage
+    /// for the entity_id in that slot (e.g., rbid, fpb_id, ready_time_ps).
+    pub fn query_buffer_state(
+        &mut self,
+        buffer_idx: usize,
+        cycle: u32,
+    ) -> Vec<(u16, Vec<u64>, Vec<(String, u64)>)> {
         let buf = match self.trace.buffers.get(buffer_idx) {
             Some(b) => b.clone(),
             None => return Vec::new(),
@@ -592,15 +601,37 @@ impl TraceState {
             None => return Vec::new(),
         };
 
+        // Find the entities storage and its field names for entity field lookup.
+        let entities_sid = self
+            .uscope_ctx
+            .as_ref()
+            .map(|c| c.entities_storage_id())
+            .unwrap_or(u16::MAX);
+        let entities_storage = trace_state
+            .storages
+            .iter()
+            .find(|s| s.storage_id == entities_sid);
+        let entities_offsets = reader.field_offsets().get(entities_sid as usize).cloned();
+        let schema = reader.schema();
+        let entity_field_names: Vec<String> = schema
+            .storages
+            .iter()
+            .find(|s| s.storage_id == entities_sid)
+            .map(|s| {
+                s.fields
+                    .iter()
+                    .map(|f| schema.get_string(f.name).unwrap_or("?").to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+
         let num_fields = buf.fields.len() as u16;
         let mut result = Vec::new();
 
         for slot in 0..storage.num_slots {
-            // For sparse storages, skip invalid slots (not yet allocated at this cycle).
             if storage.is_sparse && !storage.valid.get(slot as usize).copied().unwrap_or(false) {
                 continue;
             }
-            // First field is entity_id; occupied if non-zero.
             let entity_id = storage.get_field_at(slot, &offsets, 0);
             if entity_id == 0 {
                 continue;
@@ -609,7 +640,30 @@ impl TraceState {
             for fi in 0..num_fields {
                 field_values.push(storage.get_field_at(slot, &offsets, fi));
             }
-            result.push((slot, field_values));
+
+            // Look up entity fields from the entities storage.
+            let mut entity_fields = Vec::new();
+            if let (Some(es), Some(ref eo)) = (&entities_storage, &entities_offsets) {
+                // Find the slot in entities storage that has this entity_id.
+                for es_slot in 0..es.num_slots {
+                    if !es.valid.get(es_slot as usize).copied().unwrap_or(false) {
+                        continue;
+                    }
+                    let eid = es.get_field_at(es_slot, eo, 0);
+                    if eid == entity_id {
+                        // Read all fields (skip entity_id at 0, pc at 1).
+                        for (fi, name) in entity_field_names.iter().enumerate().skip(2) {
+                            let val = es.get_field_at(es_slot, eo, fi as u16);
+                            if val != 0 {
+                                entity_fields.push((name.clone(), val));
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+
+            result.push((slot, field_values, entity_fields));
         }
         result
     }
