@@ -705,10 +705,17 @@ mod tests {
         // Output is scaled so max maps to 1_000_000.
         // Bucket 0: 1/3 * 1_000_000 ≈ 333_333, Bucket 1: 1_000_000
         assert!(result[0].1 > 0, "bucket 0 should be non-zero");
-        assert!(result[1].1 > result[0].1, "bucket 1 (rate=3) > bucket 0 (rate=1)");
+        assert!(
+            result[1].1 > result[0].1,
+            "bucket 1 (rate=3) > bucket 0 (rate=1)"
+        );
         // Check approximate ratio: bucket1 / bucket0 ≈ 3
         let ratio = result[1].1 as f64 / result[0].1 as f64;
-        assert!((ratio - 3.0).abs() < 0.1, "rate ratio should be ~3, got {}", ratio);
+        assert!(
+            (ratio - 3.0).abs() < 0.1,
+            "rate ratio should be ~3, got {}",
+            ratio
+        );
 
         // Edge case: empty range
         assert_eq!(trace.counter_downsample_minmax(0, 5, 5, 10).len(), 0);
