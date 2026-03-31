@@ -368,22 +368,26 @@ impl Render for CounterPanel {
                                         return;
                                     }
 
-                                    let bucket_count = (width as usize).max(1);
                                     let data = if sparkline_mode == CounterDisplayMode::Delta {
-                                        // Delta mode: per-bucket absolute change.
+                                        // Delta mode: one bucket per cycle for clean bars.
+                                        let cycle_range = (vis_end - vis_start) as usize;
+                                        let bucket_count = (width as usize).min(cycle_range).max(1);
                                         let cpb =
                                             (vis_end - vis_start) as f64 / bucket_count as f64;
                                         (0..bucket_count)
                                             .map(|b| {
-                                                let c0 = vis_start as f64 + b as f64 * cpb;
-                                                let c1 = c0 + cpb;
-                                                let v0 = ts.counter_value_at(idx, c0 as u32);
-                                                let v1 = ts.counter_value_at(idx, c1.ceil() as u32);
+                                                let c0 = (vis_start as f64 + b as f64 * cpb) as u32;
+                                                let c1 = (vis_start as f64 + (b + 1) as f64 * cpb)
+                                                    .ceil()
+                                                    as u32;
+                                                let v0 = ts.counter_value_at(idx, c0);
+                                                let v1 = ts.counter_value_at(idx, c1.min(vis_end));
                                                 let d = v1.saturating_sub(v0);
                                                 (d, d)
                                             })
                                             .collect::<Vec<_>>()
                                     } else {
+                                        let bucket_count = (width as usize).max(1);
                                         ts.counter_downsample(idx, vis_start, vis_end, bucket_count)
                                     };
                                     crate::views::render_util::paint_bars(
