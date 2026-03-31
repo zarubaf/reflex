@@ -29,8 +29,6 @@ use crate::wcp::WcpClient;
 use gpui_component::dock::DockAreaState;
 use uscope::reader::Reader;
 
-/// Thread-local holding the current TraceState entity for panel registration
-/// closures. Set before DockArea::load(), cleared after.
 thread_local! {
     static RESTORE_STATE: std::cell::RefCell<Option<Entity<TraceState>>> = const { std::cell::RefCell::new(None) };
 }

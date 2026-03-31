@@ -37,11 +37,6 @@ fn field_display_name(name: &str) -> &str {
     }
 }
 
-/// Default-hidden fields.
-fn is_default_hidden(name: &str) -> bool {
-    name == "inst_bits"
-}
-
 /// A dynamic buffer panel that displays per-cycle buffer state from uscope.
 ///
 /// Created once per `BufferInfo` entry in `PipelineTrace::buffers`.
@@ -133,7 +128,7 @@ impl Render for BufferPanel {
         let content = if let Some(buf) = ts.trace.buffers.get(self.buffer_idx) {
             let occupied = self.cached_slots.len();
             let capacity = buf.capacity;
-            let field_types: Vec<u8> = buf.fields.iter().map(|(_, ft)| *ft).collect();
+            let _field_types: Vec<u8> = buf.fields.iter().map(|(_, ft)| *ft).collect();
 
             // Visible entity field names.
             let visible_fields: Vec<&String> = self
