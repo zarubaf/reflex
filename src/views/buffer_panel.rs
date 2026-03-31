@@ -285,6 +285,10 @@ impl gpui_component::dock::Panel for BufferPanel {
     }
 
     fn dump(&self, _cx: &App) -> gpui_component::dock::PanelState {
-        gpui_component::dock::PanelState::new(self)
+        let mut state = gpui_component::dock::PanelState::new(self);
+        state.info = gpui_component::dock::PanelInfo::Panel(
+            serde_json::json!({ "buffer_idx": self.buffer_idx }),
+        );
+        state
     }
 }

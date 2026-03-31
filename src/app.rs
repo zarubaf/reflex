@@ -26,7 +26,49 @@ use crate::views::pipeline_panel::PipelinePanel;
 use crate::views::search_bar::SearchBar;
 use crate::views::status_bar::StatusBar;
 use crate::wcp::WcpClient;
+use gpui_component::dock::DockAreaState;
 use uscope::reader::Reader;
+
+/// Thread-local holding the current TraceState entity for panel registration
+/// closures. Set before DockArea::load(), cleared after.
+thread_local! {
+    static RESTORE_STATE: std::cell::RefCell<Option<Entity<TraceState>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Register all custom panels with gpui-component's PanelRegistry.
+/// Must be called once during app initialization.
+pub fn register_panels(cx: &mut App) {
+    use gpui_component::dock::register_panel;
+
+    register_panel(cx, "PipelinePanel", |_dock, _state, _info, window, cx| {
+        let state = RESTORE_STATE.with(|s| s.borrow().clone()).unwrap();
+        Box::new(cx.new(|cx| PipelinePanel::new(state, window, cx)))
+    });
+
+    register_panel(cx, "CounterPanel", |_dock, _state, _info, _window, cx| {
+        let state = RESTORE_STATE.with(|s| s.borrow().clone()).unwrap();
+        Box::new(cx.new(|cx| CounterPanel::new(state, cx)))
+    });
+
+    register_panel(cx, "BufferPanel", |_dock, _state, info, _window, cx| {
+        let state = RESTORE_STATE.with(|s| s.borrow().clone()).unwrap();
+        // Extract buffer_idx from PanelInfo.
+        let buffer_idx = match info {
+            gpui_component::dock::PanelInfo::Panel(v) => {
+                v.get("buffer_idx").and_then(|v| v.as_u64()).unwrap_or(0) as usize
+            }
+            _ => 0,
+        };
+        let num_buffers = state.read(cx).trace.buffers.len();
+        let idx = buffer_idx.min(num_buffers.saturating_sub(1));
+        Box::new(cx.new(|cx| BufferPanel::new(state, idx, cx)))
+    });
+
+    register_panel(cx, "LogPanel", |_dock, _state, _info, _window, cx| {
+        // LogPanel needs a LogBuffer — create a fresh one (logs don't persist).
+        Box::new(cx.new(|cx| LogPanel::new(LogBuffer::new(), cx)))
+    });
+}
 
 /// Decode percent-encoded characters in a URL path (e.g. `%20` → ` `).
 fn percent_decode(input: &str) -> String {
@@ -953,21 +995,58 @@ impl AppView {
                     {
                         self.apply_session_to_tab(tab_idx, tab_state, cx);
                     }
-                    // Restore dock placement and open state.
+                    // Restore dock placement.
                     match session.dock_placement.as_str() {
                         "left" => self.queue_placement = DockPlacement::Left,
                         "right" => self.queue_placement = DockPlacement::Right,
                         _ => self.queue_placement = DockPlacement::Bottom,
                     }
-                    // rebuild_panel uses self.queue_placement, then we toggle dock if needed.
-                    self.rebuild_panel(window, cx);
-                    if !session.dock_open {
-                        self.dock_area.update(cx, |da, cx| {
-                            if da.is_dock_open(self.queue_placement, cx) {
-                                da.toggle_dock(self.queue_placement, window, cx);
-                            }
-                        });
+
+                    // Try restoring the full DockArea layout.
+                    let layout_restored = if let Some(ref layout_json) = session.dock_layout {
+                        if let Ok(dock_state) =
+                            serde_json::from_value::<DockAreaState>(layout_json.clone())
+                        {
+                            // Set the thread-local state for panel registration closures.
+                            let trace_state = self.tabs[tab_idx].state.clone();
+                            RESTORE_STATE.with(|s| *s.borrow_mut() = Some(trace_state));
+                            let result = self
+                                .dock_area
+                                .update(cx, |da, cx| da.load(dock_state, window, cx));
+                            RESTORE_STATE.with(|s| *s.borrow_mut() = None);
+                            result.is_ok()
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+
+                    if !layout_restored {
+                        // Fall back to default layout with saved placement.
+                        self.rebuild_panel(window, cx);
+                        if !session.dock_open {
+                            self.dock_area.update(cx, |da, cx| {
+                                if da.is_dock_open(self.queue_placement, cx) {
+                                    da.toggle_dock(self.queue_placement, window, cx);
+                                }
+                            });
+                        }
+                    } else {
+                        // Layout restored — still need to rebuild non-dock panels.
+                        if let Some(state) = self.active_state().cloned() {
+                            self.pipeline_panel =
+                                cx.new(|cx| PipelinePanel::new(state.clone(), window, cx));
+                            self.counter_panel = cx.new(|cx| CounterPanel::new(state.clone(), cx));
+                            self.minimap_view = cx.new(|cx| MinimapView::new(state.clone(), cx));
+                            self.status_bar = cx.new(|_cx| StatusBar::new(state.clone()));
+                            let focus = self.focus_handle.clone();
+                            self.search_bar =
+                                cx.new(|cx| SearchBar::new(state.clone(), focus.clone(), cx));
+                            self.goto_bar = cx.new(|cx| GotoBar::new(state.clone(), focus, cx));
+                        }
                     }
+
                     cx.notify();
                     return; // skip the default rebuild_panel below
                 }
@@ -1059,12 +1138,17 @@ impl AppView {
             .read(cx)
             .is_dock_open(self.queue_placement, cx);
 
+        // Serialize the full DockArea layout.
+        let dock_state = self.dock_area.read(cx).dump(cx);
+        let dock_layout = serde_json::to_value(&dock_state).ok();
+
         Some(session::Session {
             version: 1,
             tabs,
             active_tab: self.active_tab,
             dock_placement: placement.to_string(),
             dock_open,
+            dock_layout,
         })
     }
 

@@ -79,6 +79,7 @@ fn main() {
         gpui_component::init(cx);
         interaction::keybindings::register(cx);
         interaction::menus::setup(cx);
+        app::register_panels(cx);
 
         cx.on_action(|_: &interaction::actions::Quit, cx: &mut App| {
             cx.quit();
