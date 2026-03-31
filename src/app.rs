@@ -783,6 +783,8 @@ impl AppView {
         if idx >= self.tabs.len() || idx == self.active_tab {
             return;
         }
+        // Save session before switching (captures current tab's viewport state).
+        self.save_session(cx);
         self.active_tab = idx;
         self.rebuild_panel(window, cx);
     }
@@ -972,6 +974,8 @@ impl AppView {
         if idx >= self.tabs.len() {
             return;
         }
+        // Save session before modifying tabs.
+        self.save_session(cx);
         self.tabs.remove(idx);
         if self.tabs.is_empty() {
             self.active_tab = 0;
@@ -1472,6 +1476,7 @@ impl AppView {
             return;
         }
         self.queue_placement = placement;
+        self.save_session(cx);
         if let Some(state) = self.active_state().cloned() {
             self.pipeline_panel = cx.new(|cx| PipelinePanel::new(state.clone(), window, cx));
             self.counter_panel = cx.new(|cx| CounterPanel::new(state.clone(), cx));
