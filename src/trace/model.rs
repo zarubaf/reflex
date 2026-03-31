@@ -370,10 +370,10 @@ impl PipelineTrace {
         // Build intervals with f64 rates to avoid integer division truncation.
         // Each interval: (start_cycle, end_cycle, rate_per_cycle).
         let mut intervals: Vec<(u32, u32, f64)> = Vec::with_capacity(series.samples.len() + 1);
-        if let Some(&(first_c, first_v)) = series.samples.first() {
+        if let Some(&(first_c, _first_v)) = series.samples.first() {
             if first_c > 0 {
-                let rate = first_v as f64 / first_c as f64;
-                intervals.push((0, first_c, rate));
+                // No counter events fired before the first sample — rate is 0.
+                intervals.push((0, first_c, 0.0));
             }
         }
         for w in series.samples.windows(2) {
