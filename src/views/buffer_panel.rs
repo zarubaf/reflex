@@ -203,6 +203,27 @@ impl Render for BufferPanel {
                     });
 
                     let is_selected = instr_row == selected_row && selected_row.is_some();
+                    let is_flushed = instr_row
+                        .map(|r| {
+                            ts.trace.instructions[r].retire_status
+                                == crate::trace::model::RetireStatus::Flushed
+                        })
+                        .unwrap_or(false);
+
+                    // Fade flushed instructions.
+                    let text_primary = if is_flushed {
+                        colors::TEXT_DIMMED
+                    } else {
+                        colors::TEXT_PRIMARY
+                    };
+                    let text_secondary = if is_flushed {
+                        Hsla {
+                            a: 0.25,
+                            ..colors::TEXT_DIMMED
+                        }
+                    } else {
+                        colors::TEXT_DIMMED
+                    };
 
                     let mut row_children: Vec<AnyElement> = Vec::new();
 
@@ -211,7 +232,11 @@ impl Render for BufferPanel {
                         div()
                             .w(px(SLOT_COL_W))
                             .flex_shrink_0()
-                            .text_color(colors::TEXT_ROW_NUMBER)
+                            .text_color(if is_flushed {
+                                text_secondary
+                            } else {
+                                colors::TEXT_ROW_NUMBER
+                            })
                             .child(format!("0x{:02x}", slot))
                             .into_any_element(),
                     );
@@ -219,10 +244,18 @@ impl Render for BufferPanel {
                     // Stage name.
                     row_children.push(if let Some(ref stage) = stage_name {
                         let stage_idx = ts.trace.stage_name_idx(stage).unwrap_or(0);
+                        let stage_col = if is_flushed {
+                            Hsla {
+                                a: 0.3,
+                                ..colors::stage_color(stage_idx)
+                            }
+                        } else {
+                            colors::stage_color(stage_idx)
+                        };
                         div()
                             .w(px(STAGE_COL_W))
                             .flex_shrink_0()
-                            .text_color(colors::stage_color(stage_idx))
+                            .text_color(stage_col)
                             .child(stage.clone())
                             .into_any_element()
                     } else {
@@ -235,7 +268,7 @@ impl Render for BufferPanel {
                             .min_w(px(DISASM_MIN_W))
                             .flex_1()
                             .flex_shrink_0()
-                            .text_color(colors::TEXT_PRIMARY)
+                            .text_color(text_primary)
                             .child(disasm)
                             .into_any_element(),
                     );
@@ -256,7 +289,7 @@ impl Render for BufferPanel {
                             div()
                                 .w(px(FIELD_COL_W))
                                 .flex_shrink_0()
-                                .text_color(colors::TEXT_DIMMED)
+                                .text_color(text_secondary)
                                 .child(text)
                                 .into_any_element(),
                         );
