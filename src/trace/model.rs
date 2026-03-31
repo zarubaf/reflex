@@ -367,27 +367,23 @@ impl PipelineTrace {
             return vec![(0, 0); bucket_count];
         }
 
-        // Build a list of (interval_start_cycle, interval_end_cycle, per_cycle_rate)
-        // from the sparse samples. The first interval runs from cycle 0 to samples[0].
-        let mut intervals: Vec<(u32, u32, u64)> = Vec::with_capacity(series.samples.len() + 1);
+        // Build intervals with f64 rates to avoid integer division truncation.
+        // Each interval: (start_cycle, end_cycle, rate_per_cycle).
+        let mut intervals: Vec<(u32, u32, f64)> = Vec::with_capacity(series.samples.len() + 1);
         if let Some(&(first_c, first_v)) = series.samples.first() {
             if first_c > 0 {
-                let rate = if first_c > 0 {
-                    first_v / first_c as u64
-                } else {
-                    0
-                };
+                let rate = first_v as f64 / first_c as f64;
                 intervals.push((0, first_c, rate));
             }
         }
         for w in series.samples.windows(2) {
             let (c0, v0) = w[0];
             let (c1, v1) = w[1];
-            let span = c1.saturating_sub(c0);
-            let rate = if span > 0 {
-                v1.wrapping_sub(v0) / span as u64
+            let span = c1.saturating_sub(c0) as f64;
+            let rate = if span > 0.0 {
+                v1.wrapping_sub(v0) as f64 / span
             } else {
-                0
+                0.0
             };
             intervals.push((c0, c1, rate));
         }
@@ -395,31 +391,40 @@ impl PipelineTrace {
         let range = end_cycle.saturating_sub(start_cycle) as f64;
         let cycles_per_bucket = range / bucket_count as f64;
 
-        let mut result = Vec::with_capacity(bucket_count);
+        // Compute f64 rates per bucket, then scale to integer range.
+        let mut f64_result: Vec<(f64, f64)> = Vec::with_capacity(bucket_count);
         for b in 0..bucket_count {
             let bucket_start = start_cycle + (b as f64 * cycles_per_bucket) as u32;
             let bucket_end = start_cycle + ((b + 1) as f64 * cycles_per_bucket) as u32;
             let bucket_end = bucket_end.min(end_cycle);
 
-            let mut min_rate = u64::MAX;
-            let mut max_rate = 0u64;
+            let mut min_rate = f64::MAX;
+            let mut max_rate = 0.0f64;
 
-            // Find intervals that overlap [bucket_start, bucket_end).
             for &(iv_start, iv_end, rate) in &intervals {
                 if iv_start < bucket_end && iv_end > bucket_start {
                     min_rate = min_rate.min(rate);
                     max_rate = max_rate.max(rate);
                 }
             }
-            if min_rate == u64::MAX {
-                // No intervals overlap this bucket — use interpolated value.
-                let rate = self.counter_delta_at(counter_idx, bucket_start);
-                min_rate = rate;
-                max_rate = rate;
+            if min_rate == f64::MAX {
+                min_rate = 0.0;
+                max_rate = 0.0;
             }
-            result.push((min_rate, max_rate));
+            f64_result.push((min_rate, max_rate));
         }
-        result
+
+        // Scale so the global max maps to a large integer (paint_bars normalizes).
+        let global_max = f64_result.iter().map(|(_, mx)| *mx).fold(0.0f64, f64::max);
+        let scale = if global_max > 0.0 {
+            1_000_000.0 / global_max
+        } else {
+            1.0
+        };
+        f64_result
+            .iter()
+            .map(|(mn, mx)| ((mn * scale) as u64, (mx * scale) as u64))
+            .collect()
     }
 
     /// Compute queue occupancy at a given cycle.
