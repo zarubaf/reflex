@@ -37,6 +37,9 @@ fn field_display_name(name: &str) -> &str {
     }
 }
 
+/// Occupied buffer slot: (slot_index, buffer_field_values, entity_field_name_value_pairs).
+type BufferSlot = (u16, Vec<u64>, Vec<(String, u64)>);
+
 /// A dynamic buffer panel that displays per-cycle buffer state from uscope.
 ///
 /// Created once per `BufferInfo` entry in `PipelineTrace::buffers`.
@@ -48,7 +51,7 @@ pub struct BufferPanel {
     /// Cached cycle for which `cached_slots` is valid.
     cached_cycle: u32,
     /// Cached occupied slots: (slot_index, field_values, entity_fields).
-    cached_slots: Vec<(u16, Vec<u64>, Vec<(String, u64)>)>,
+    cached_slots: Vec<BufferSlot>,
     /// Entity field names discovered from the first query (stable per trace).
     entity_field_names: Vec<String>,
     /// Hidden column names.
@@ -192,8 +195,8 @@ impl Render for BufferPanel {
                         let stages = ts.trace.stages_for(r);
                         stages
                             .iter()
-                            .filter(|s| s.start_cycle <= cursor_cycle && cursor_cycle < s.end_cycle)
-                            .last()
+                            .rev()
+                            .find(|s| s.start_cycle <= cursor_cycle && cursor_cycle < s.end_cycle)
                             .map(|s| ts.trace.stage_name(s.stage_name_idx).to_string())
                     });
 

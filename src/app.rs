@@ -563,7 +563,7 @@ impl TraceState {
         &mut self,
         buffer_idx: usize,
         cycle: u32,
-    ) -> Vec<(u16, Vec<u64>, Vec<(String, u64)>)> {
+    ) -> Vec<crate::views::buffer_panel::BufferSlot> {
         let buf = match self.trace.buffers.get(buffer_idx) {
             Some(b) => b.clone(),
             None => return Vec::new(),
