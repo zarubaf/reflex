@@ -23,6 +23,9 @@ pub struct Session {
     /// Whether the buffer dock is open.
     #[serde(default = "default_true")]
     pub dock_open: bool,
+    /// Full DockArea layout state (from DockArea::dump).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dock_layout: Option<serde_json::Value>,
 }
 
 fn default_true() -> bool {
