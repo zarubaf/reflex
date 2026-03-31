@@ -38,7 +38,7 @@ fn field_display_name(name: &str) -> &str {
 }
 
 /// Occupied buffer slot: (slot_index, buffer_field_values, entity_field_name_value_pairs).
-type BufferSlot = (u16, Vec<u64>, Vec<(String, u64)>);
+pub type BufferSlot = (u16, Vec<u64>, Vec<(String, u64)>);
 
 /// A dynamic buffer panel that displays per-cycle buffer state from uscope.
 ///
