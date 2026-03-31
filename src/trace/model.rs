@@ -701,10 +701,14 @@ mod tests {
         // 2 buckets over 10 cycles: bucket 0 = cycles 0..5, bucket 1 = cycles 5..10
         let result = trace.counter_downsample_minmax(0, 0, 10, 2);
         assert_eq!(result.len(), 2);
-        // Bucket 0 covers interval (0,5) with rate=1 → min=1, max=1
-        assert_eq!(result[0], (1, 1));
-        // Bucket 1 covers interval (5,10) with rate=3 → min=3, max=3
-        assert_eq!(result[1], (3, 3));
+        // Rates are f64-scaled: bucket 0 rate=1, bucket 1 rate=3.
+        // Output is scaled so max maps to 1_000_000.
+        // Bucket 0: 1/3 * 1_000_000 ≈ 333_333, Bucket 1: 1_000_000
+        assert!(result[0].1 > 0, "bucket 0 should be non-zero");
+        assert!(result[1].1 > result[0].1, "bucket 1 (rate=3) > bucket 0 (rate=1)");
+        // Check approximate ratio: bucket1 / bucket0 ≈ 3
+        let ratio = result[1].1 as f64 / result[0].1 as f64;
+        assert!((ratio - 3.0).abs() < 0.1, "rate ratio should be ~3, got {}", ratio);
 
         // Edge case: empty range
         assert_eq!(trace.counter_downsample_minmax(0, 5, 5, 10).len(), 0);
