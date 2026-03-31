@@ -178,6 +178,28 @@ impl Render for BufferPanel {
                             .into_any_element(),
                     );
 
+                    // Extra fields (skip entity_id at index 0 and Bool/ready fields).
+                    for (fi, (name, ft)) in buf.fields.iter().enumerate() {
+                        if fi == 0 {
+                            continue; // entity_id already shown as disasm
+                        }
+                        if *ft == 0x09 {
+                            continue; // Bool already shown as ready dot
+                        }
+                        if let Some(&val) = field_values.get(fi) {
+                            if val == 0 {
+                                continue; // skip zero-valued fields to reduce clutter
+                            }
+                            row_children.push(
+                                div()
+                                    .flex_shrink_0()
+                                    .text_color(colors::TEXT_DIMMED)
+                                    .child(format!("{}={}", name, val))
+                                    .into_any_element(),
+                            );
+                        }
+                    }
+
                     let state = self.state.clone();
 
                     div()
