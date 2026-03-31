@@ -1,8 +1,46 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
+use std::collections::HashSet;
 
 use crate::app::TraceState;
 use crate::theme::colors;
+
+/// Column width for entity field values.
+const FIELD_COL_W: f32 = 72.0;
+/// Column width for the slot number.
+const SLOT_COL_W: f32 = 40.0;
+/// Column width for the stage name.
+const STAGE_COL_W: f32 = 28.0;
+/// Minimum width for the disasm column.
+const DISASM_MIN_W: f32 = 180.0;
+
+/// Format an entity field value for display.
+fn format_field(name: &str, value: u64, period_ps: u64) -> String {
+    match name {
+        "inst_bits" => format!("0x{:08x}", value as u32),
+        "ready_time_ps" => {
+            if period_ps > 0 {
+                format!("{}", value / period_ps)
+            } else {
+                format!("{}", value)
+            }
+        }
+        _ => format!("{}", value),
+    }
+}
+
+/// Display name for a field (shorten long names).
+fn field_display_name(name: &str) -> &str {
+    match name {
+        "ready_time_ps" => "ready",
+        _ => name,
+    }
+}
+
+/// Default-hidden fields.
+fn is_default_hidden(name: &str) -> bool {
+    name == "inst_bits"
+}
 
 /// A dynamic buffer panel that displays per-cycle buffer state from uscope.
 ///
@@ -11,32 +49,39 @@ use crate::theme::colors;
 pub struct BufferPanel {
     state: Entity<TraceState>,
     focus_handle: FocusHandle,
-    buffer_idx: usize,
+    pub buffer_idx: usize,
     /// Cached cycle for which `cached_slots` is valid.
     cached_cycle: u32,
     /// Cached occupied slots: (slot_index, field_values, entity_fields).
     cached_slots: Vec<(u16, Vec<u64>, Vec<(String, u64)>)>,
+    /// Entity field names discovered from the first query (stable per trace).
+    entity_field_names: Vec<String>,
+    /// Hidden column names.
+    pub hidden_columns: HashSet<String>,
 }
 
 impl BufferPanel {
     pub fn new(state: Entity<TraceState>, buffer_idx: usize, cx: &mut Context<Self>) -> Self {
-        // Invalidate this panel's render cache when TraceState changes,
-        // so that TabPanel's cached() wrapper re-renders us.
         cx.observe(&state, |_this, _state, cx| {
             cx.notify();
         })
         .detach();
 
+        let mut hidden = HashSet::new();
+        // Apply default-hidden fields.
+        hidden.insert("inst_bits".to_string());
+
         Self {
             state,
             focus_handle: cx.focus_handle(),
             buffer_idx,
-            cached_cycle: u32::MAX, // sentinel: no valid cache
+            cached_cycle: u32::MAX,
             cached_slots: Vec::new(),
+            entity_field_names: Vec::new(),
+            hidden_columns: hidden,
         }
     }
 
-    /// Get the buffer name for use in Panel trait methods.
     fn buffer_name(&self, cx: &App) -> String {
         let ts = self.state.read(cx);
         ts.trace
@@ -44,6 +89,16 @@ impl BufferPanel {
             .get(self.buffer_idx)
             .map(|b| b.name.clone())
             .unwrap_or_else(|| format!("buffer_{}", self.buffer_idx))
+    }
+
+    /// Get the list of hidden column names (for session persistence).
+    pub fn hidden_column_names(&self) -> Vec<String> {
+        self.hidden_columns.iter().cloned().collect()
+    }
+
+    /// Set hidden columns (for session restore).
+    pub fn set_hidden_columns(&mut self, names: Vec<String>) {
+        self.hidden_columns = names.into_iter().collect();
     }
 }
 
@@ -63,29 +118,68 @@ impl Render for BufferPanel {
             let new_slots = self.state.update(cx, |ts, _cx| {
                 ts.query_buffer_state(buffer_idx, cursor_cycle)
             });
+            // Discover entity field names from first non-empty result.
+            if self.entity_field_names.is_empty() {
+                if let Some((_, _, ref ef)) = new_slots.first() {
+                    self.entity_field_names = ef.iter().map(|(n, _)| n.clone()).collect();
+                }
+            }
             self.cached_slots = new_slots;
         }
 
         let ts = self.state.read(cx);
+        let period_ps = ts.trace.period_ps.unwrap_or(1);
 
         let content = if let Some(buf) = ts.trace.buffers.get(self.buffer_idx) {
             let occupied = self.cached_slots.len();
             let capacity = buf.capacity;
             let field_types: Vec<u8> = buf.fields.iter().map(|(_, ft)| *ft).collect();
 
-            // Header row: column names
+            // Visible entity field names.
+            let visible_fields: Vec<&String> = self
+                .entity_field_names
+                .iter()
+                .filter(|n| !self.hidden_columns.contains(n.as_str()))
+                .collect();
+
+            // ── Header row ───────────────────────────────────────────
             let mut header_children: Vec<AnyElement> = Vec::new();
             header_children.push(
                 div()
-                    .w(px(40.0))
+                    .w(px(SLOT_COL_W))
                     .flex_shrink_0()
                     .text_color(colors::TEXT_DIMMED)
                     .child("Slot")
                     .into_any_element(),
             );
-            // No column headers — layout is: [ready dot] slot stage disasm
+            header_children.push(
+                div()
+                    .w(px(STAGE_COL_W))
+                    .flex_shrink_0()
+                    .text_color(colors::TEXT_DIMMED)
+                    .child("Stg")
+                    .into_any_element(),
+            );
+            header_children.push(
+                div()
+                    .min_w(px(DISASM_MIN_W))
+                    .flex_1()
+                    .text_color(colors::TEXT_DIMMED)
+                    .child("Instruction")
+                    .into_any_element(),
+            );
+            for name in &visible_fields {
+                header_children.push(
+                    div()
+                        .w(px(FIELD_COL_W))
+                        .flex_shrink_0()
+                        .text_color(colors::TEXT_DIMMED)
+                        .child(field_display_name(name).to_string())
+                        .into_any_element(),
+                );
+            }
 
-            // Slot rows — show: ready dot | slot | disasm | stage
+            // ── Data rows ────────────────────────────────────────────
             let ts = self.state.read(cx);
             let selected_row = ts.selected_row;
             let slot_rows: Vec<AnyElement> = self
@@ -95,7 +189,6 @@ impl Render for BufferPanel {
                 .map(|(row_idx, (slot, field_values, entity_fields))| {
                     let entity_id = field_values.first().copied().unwrap_or(0) as u32;
 
-                    // Look up instruction details from loaded trace.
                     let instr_row = ts.trace.instructions.iter().position(|i| i.id == entity_id);
                     let disasm = instr_row
                         .map(|r| ts.trace.instructions[r].disasm.clone())
@@ -113,43 +206,10 @@ impl Render for BufferPanel {
 
                     let mut row_children: Vec<AnyElement> = Vec::new();
 
-                    // Ready dot first (find Bool field in field_types/field_values).
-                    let ready_val = field_types
-                        .iter()
-                        .enumerate()
-                        .find(|(_, ft)| **ft == 0x09)
-                        .and_then(|(fi, _)| field_values.get(fi));
-                    if let Some(&ready) = ready_val {
-                        let dot_color = if ready != 0 {
-                            Hsla {
-                                h: 120.0 / 360.0,
-                                s: 0.7,
-                                l: 0.45,
-                                a: 1.0,
-                            }
-                        } else {
-                            Hsla {
-                                h: 0.0,
-                                s: 0.7,
-                                l: 0.55,
-                                a: 1.0,
-                            }
-                        };
-                        row_children.push(
-                            div()
-                                .w(px(14.0))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(div().w(px(6.0)).h(px(6.0)).rounded(px(3.0)).bg(dot_color))
-                                .into_any_element(),
-                        );
-                    }
-
                     // Slot number.
                     row_children.push(
                         div()
-                            .w(px(36.0))
+                            .w(px(SLOT_COL_W))
                             .flex_shrink_0()
                             .text_color(colors::TEXT_ROW_NUMBER)
                             .child(format!("0x{:02x}", slot))
@@ -157,34 +217,47 @@ impl Render for BufferPanel {
                     );
 
                     // Stage name.
-                    if let Some(ref stage) = stage_name {
+                    row_children.push(if let Some(ref stage) = stage_name {
                         let stage_idx = ts.trace.stage_name_idx(stage).unwrap_or(0);
-                        row_children.push(
-                            div()
-                                .w(px(24.0))
-                                .text_color(colors::stage_color(stage_idx))
-                                .child(stage.clone())
-                                .into_any_element(),
-                        );
-                    }
+                        div()
+                            .w(px(STAGE_COL_W))
+                            .flex_shrink_0()
+                            .text_color(colors::stage_color(stage_idx))
+                            .child(stage.clone())
+                            .into_any_element()
+                    } else {
+                        div().w(px(STAGE_COL_W)).flex_shrink_0().into_any_element()
+                    });
 
-                    // Instruction disasm.
+                    // Disasm.
                     row_children.push(
                         div()
+                            .min_w(px(DISASM_MIN_W))
                             .flex_1()
+                            .flex_shrink_0()
                             .text_color(colors::TEXT_PRIMARY)
-                            .overflow_x_hidden()
                             .child(disasm)
                             .into_any_element(),
                     );
 
-                    // Entity fields from the entities storage (rbid, fpb_id, etc.).
-                    for (name, val) in entity_fields {
+                    // Entity fields — only visible ones, in consistent order.
+                    let ef_map: std::collections::HashMap<&str, u64> = entity_fields
+                        .iter()
+                        .map(|(n, v)| (n.as_str(), *v))
+                        .collect();
+                    for name in &visible_fields {
+                        let val = ef_map.get(name.as_str()).copied().unwrap_or(0);
+                        let text = if val == 0 {
+                            String::new()
+                        } else {
+                            format_field(name, val, period_ps)
+                        };
                         row_children.push(
                             div()
+                                .w(px(FIELD_COL_W))
                                 .flex_shrink_0()
                                 .text_color(colors::TEXT_DIMMED)
-                                .child(format!("{}={}", name, val))
+                                .child(text)
                                 .into_any_element(),
                         );
                     }
@@ -194,7 +267,7 @@ impl Render for BufferPanel {
                     div()
                         .id(("slot-row", row_idx))
                         .flex()
-                        .gap_2()
+                        .gap(px(4.0))
                         .px_2()
                         .py(px(1.0))
                         .cursor_pointer()
@@ -230,6 +303,7 @@ impl Render for BufferPanel {
                 .flex()
                 .flex_col()
                 .overflow_hidden()
+                // Title bar.
                 .child(
                     div()
                         .px_2()
@@ -242,12 +316,34 @@ impl Render for BufferPanel {
                             buf.name, occupied, capacity, cursor_cycle
                         )),
                 )
+                // Scrollable table.
                 .child(
                     div()
                         .id(("buf-scroll", self.buffer_idx))
                         .flex_1()
                         .overflow_y_scroll()
-                        .children(slot_rows),
+                        .overflow_x_scroll()
+                        .child(
+                            div().flex().flex_col().child(
+                                // Header + rows in a single column so they scroll together.
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    // Header row.
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .gap(px(4.0))
+                                            .px_2()
+                                            .py(px(1.0))
+                                            .border_b_1()
+                                            .border_color(colors::GRID_LINE)
+                                            .children(header_children),
+                                    )
+                                    // Data rows.
+                                    .children(slot_rows),
+                            ),
+                        ),
                 )
         } else {
             div()
@@ -279,7 +375,6 @@ impl EventEmitter<gpui_component::dock::PanelEvent> for BufferPanel {}
 
 impl gpui_component::dock::Panel for BufferPanel {
     fn panel_name(&self) -> &'static str {
-        // Static string required by trait; use a generic name.
         "BufferPanel"
     }
 

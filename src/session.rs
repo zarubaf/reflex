@@ -38,6 +38,9 @@ pub struct TabState {
     pub viewport: ViewportSnapshot,
     pub cursors: CursorSnapshot,
     pub counter_state: CounterPanelSnapshot,
+    /// Per-buffer hidden column names. Key: buffer name, Value: hidden field names.
+    #[serde(default)]
+    pub buffer_hidden_columns: std::collections::HashMap<String, Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize)]
