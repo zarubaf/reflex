@@ -596,6 +596,10 @@ impl TraceState {
         let mut result = Vec::new();
 
         for slot in 0..storage.num_slots {
+            // For sparse storages, skip invalid slots (not yet allocated at this cycle).
+            if storage.is_sparse && !storage.valid.get(slot as usize).copied().unwrap_or(false) {
+                continue;
+            }
             // First field is entity_id; occupied if non-zero.
             let entity_id = storage.get_field_at(slot, &offsets, 0);
             if entity_id == 0 {
