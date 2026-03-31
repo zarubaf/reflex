@@ -387,7 +387,8 @@ impl Render for CounterPanel {
                                             })
                                             .collect::<Vec<_>>()
                                     } else {
-                                        let bucket_count = (width as usize).max(1);
+                                        let cycle_range = (vis_end - vis_start) as usize;
+                                        let bucket_count = (width as usize).min(cycle_range).max(1);
                                         ts.counter_downsample(idx, vis_start, vis_end, bucket_count)
                                     };
                                     crate::views::render_util::paint_bars(
