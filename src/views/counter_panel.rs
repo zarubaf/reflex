@@ -112,6 +112,46 @@ impl CounterPanel {
         }
     }
 
+    /// Export display modes for session persistence.
+    pub fn session_display_modes(&self) -> Vec<Option<String>> {
+        self.display_modes
+            .iter()
+            .map(|m| {
+                m.map(|mode| match mode {
+                    CounterDisplayMode::Total => "Total".to_string(),
+                    CounterDisplayMode::Rate => "Rate".to_string(),
+                    CounterDisplayMode::Delta => "Delta".to_string(),
+                })
+            })
+            .collect()
+    }
+
+    /// Export view mode for session persistence.
+    pub fn session_view_mode(&self) -> String {
+        match self.view_mode {
+            ViewMode::Detail => "Detail".to_string(),
+            ViewMode::Heatmap => "Heatmap".to_string(),
+        }
+    }
+
+    /// Restore counter panel state from a session snapshot.
+    pub fn restore_session(&mut self, snap: &crate::session::CounterPanelSnapshot) {
+        for (i, mode_str) in snap.display_modes.iter().enumerate() {
+            if i < self.display_modes.len() {
+                self.display_modes[i] = mode_str.as_deref().and_then(|s| match s {
+                    "Total" => Some(CounterDisplayMode::Total),
+                    "Rate" => Some(CounterDisplayMode::Rate),
+                    "Delta" => Some(CounterDisplayMode::Delta),
+                    _ => None,
+                });
+            }
+        }
+        self.view_mode = match snap.view_mode.as_str() {
+            "Heatmap" => ViewMode::Heatmap,
+            _ => ViewMode::Detail,
+        };
+    }
+
     fn effective_mode(&self, idx: usize, default: CounterDisplayMode) -> CounterDisplayMode {
         self.display_modes
             .get(idx)
@@ -286,28 +326,24 @@ impl Render for CounterPanel {
                     .cursor_pointer()
                     .on_mouse_up(
                         MouseButton::Left,
-                        cx.listener(
-                            move |this, event: &MouseUpEvent, _window, cx| {
-                                let local_x = px_val(event.position.x)
-                                    - px_val(this.canvas_origin.x);
-                                if this.canvas_width > 0.0 {
-                                    let cycle = {
-                                        let ts = this.state.read(cx);
-                                        let (vs, ve) = ts.effective_counter_range();
-                                        if ve <= vs {
-                                            return;
-                                        }
-                                        let frac =
-                                            (local_x / this.canvas_width).clamp(0.0, 1.0);
-                                        vs as f64 + frac as f64 * (ve - vs) as f64
-                                    };
-                                    this.state.update(cx, |ts, cx| {
-                                        ts.cursor_state.move_cursor(cycle.round());
-                                        cx.notify();
-                                    });
-                                }
-                            },
-                        ),
+                        cx.listener(move |this, event: &MouseUpEvent, _window, cx| {
+                            let local_x = px_val(event.position.x) - px_val(this.canvas_origin.x);
+                            if this.canvas_width > 0.0 {
+                                let cycle = {
+                                    let ts = this.state.read(cx);
+                                    let (vs, ve) = ts.effective_counter_range();
+                                    if ve <= vs {
+                                        return;
+                                    }
+                                    let frac = (local_x / this.canvas_width).clamp(0.0, 1.0);
+                                    vs as f64 + frac as f64 * (ve - vs) as f64
+                                };
+                                this.state.update(cx, |ts, cx| {
+                                    ts.cursor_state.move_cursor(cycle.round());
+                                    cx.notify();
+                                });
+                            }
+                        }),
                     )
                     .child(
                         canvas(
@@ -333,10 +369,12 @@ impl Render for CounterPanel {
 
                                     // Cap buckets at cycle range to avoid sparse bars
                                     let cycle_range = (vis_end - vis_start) as usize;
-                                    let bucket_count =
-                                        (width as usize).min(cycle_range).max(1);
+                                    let bucket_count = (width as usize).min(cycle_range).max(1);
                                     let data = ts.counter_downsample(
-                                        idx, vis_start, vis_end, bucket_count,
+                                        idx,
+                                        vis_start,
+                                        vis_end,
+                                        bucket_count,
                                     );
                                     crate::views::render_util::paint_bars(
                                         &data,
@@ -418,26 +456,21 @@ impl Render for CounterPanel {
                 .cursor_pointer()
                 .on_mouse_up(
                     MouseButton::Left,
-                    cx.listener(
-                        move |this, event: &MouseUpEvent, _window, cx| {
-                            let local_x = px_val(event.position.x)
-                                - px_val(this.canvas_origin.x);
-                            if this.canvas_width > 0.0 {
-                                let ts = this.state.read(cx);
-                                let (vs, ve) = ts.effective_counter_range();
-                                if ve > vs {
-                                    let frac =
-                                        (local_x / this.canvas_width).clamp(0.0, 1.0);
-                                    let cycle =
-                                        vs as f64 + frac as f64 * (ve - vs) as f64;
-                                    this.state.update(cx, |ts, cx| {
-                                        ts.cursor_state.move_cursor(cycle.round());
-                                        cx.notify();
-                                    });
-                                }
+                    cx.listener(move |this, event: &MouseUpEvent, _window, cx| {
+                        let local_x = px_val(event.position.x) - px_val(this.canvas_origin.x);
+                        if this.canvas_width > 0.0 {
+                            let ts = this.state.read(cx);
+                            let (vs, ve) = ts.effective_counter_range();
+                            if ve > vs {
+                                let frac = (local_x / this.canvas_width).clamp(0.0, 1.0);
+                                let cycle = vs as f64 + frac as f64 * (ve - vs) as f64;
+                                this.state.update(cx, |ts, cx| {
+                                    ts.cursor_state.move_cursor(cycle.round());
+                                    cx.notify();
+                                });
                             }
-                        },
-                    ),
+                        }
+                    }),
                 )
                 .child(
                     canvas(
@@ -468,12 +501,7 @@ impl Render for CounterPanel {
                                 }
 
                                 // Check if cache is valid.
-                                let cache_key = (
-                                    (vis_start, vis_end),
-                                    width,
-                                    height,
-                                    num_counters,
-                                );
+                                let cache_key = ((vis_start, vis_end), width, height, num_counters);
                                 let need_rebuild = {
                                     let panel = entity.read(cx);
                                     match &panel.heatmap_cache {
@@ -490,8 +518,7 @@ impl Render for CounterPanel {
                                 if need_rebuild {
                                     let cycle_range = (vis_end - vis_start) as usize;
                                     let max_buckets = (width as usize / 4).max(1);
-                                    let bucket_count =
-                                        max_buckets.min(cycle_range).max(1);
+                                    let bucket_count = max_buckets.min(cycle_range).max(1);
                                     let row_h = (height / num_counters as f32)
                                         .clamp(2.0, HEATMAP_ROW_HEIGHT);
                                     let n_f = bucket_count as f32;
@@ -499,11 +526,12 @@ impl Render for CounterPanel {
                                     let mut quads = Vec::new();
                                     let mut labels = Vec::new();
 
-                                    for (ci, c) in
-                                        ts.trace.counters.iter().enumerate()
-                                    {
+                                    for (ci, c) in ts.trace.counters.iter().enumerate() {
                                         let data = ts.counter_downsample(
-                                            ci, vis_start, vis_end, bucket_count,
+                                            ci,
+                                            vis_start,
+                                            vis_end,
+                                            bucket_count,
                                         );
                                         let local_max = data
                                             .iter()
@@ -519,8 +547,7 @@ impl Render for CounterPanel {
                                         let mut run_level: i32 = -1;
                                         for bi in 0..=data.len() {
                                             let level = if bi < data.len() {
-                                                let raw = data[bi].1 as f32
-                                                    / local_max as f32;
+                                                let raw = data[bi].1 as f32 / local_max as f32;
                                                 if raw < 0.001 {
                                                     0
                                                 } else {
@@ -531,12 +558,9 @@ impl Render for CounterPanel {
                                             };
                                             if level != run_level {
                                                 if run_level > 0 {
-                                                    let x = (run_start as f32 / n_f
-                                                        * width)
-                                                        .floor();
-                                                    let x_end = (bi as f32 / n_f
-                                                        * width)
-                                                        .floor();
+                                                    let x =
+                                                        (run_start as f32 / n_f * width).floor();
+                                                    let x_end = (bi as f32 / n_f * width).floor();
                                                     let qi = run_level as f32 / 8.0;
                                                     quads.push((
                                                         x,
@@ -577,74 +601,69 @@ impl Render for CounterPanel {
                                     let c = panel.heatmap_cache.as_ref().unwrap();
                                     (c.quads.clone(), c.labels.clone())
                                 };
-                                let row_h = (height / num_counters as f32)
-                                    .clamp(2.0, HEATMAP_ROW_HEIGHT);
+                                let row_h =
+                                    (height / num_counters as f32).clamp(2.0, HEATMAP_ROW_HEIGHT);
 
-                                window.with_content_mask(
-                                    Some(ContentMask { bounds }),
-                                    |window| {
-                                        for &(x, y, w, h, color) in &quads {
-                                            window.paint_quad(fill(
-                                                Bounds::new(
-                                                    point(
-                                                        bounds.origin.x + px(x),
-                                                        bounds.origin.y + px(y),
-                                                    ),
-                                                    size(px(w), px(h)),
+                                window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                                    for &(x, y, w, h, color) in &quads {
+                                        window.paint_quad(fill(
+                                            Bounds::new(
+                                                point(
+                                                    bounds.origin.x + px(x),
+                                                    bounds.origin.y + px(y),
                                                 ),
-                                                color,
-                                            ));
-                                        }
+                                                size(px(w), px(h)),
+                                            ),
+                                            color,
+                                        ));
+                                    }
 
-                                        // Cursor lines
-                                        paint_cursor_lines(
-                                            &cursor_state,
-                                            vis_start,
-                                            vis_end,
-                                            &bounds,
-                                            width,
-                                            height,
-                                            window,
-                                        );
+                                    // Cursor lines
+                                    paint_cursor_lines(
+                                        &cursor_state,
+                                        vis_start,
+                                        vis_end,
+                                        &bounds,
+                                        width,
+                                        height,
+                                        window,
+                                    );
 
-                                        // Counter name labels
-                                        if row_h >= 10.0 {
-                                            for (name, row_y) in &labels {
-                                                let run = TextRun {
-                                                    len: name.len(),
-                                                    font: Font {
-                                                        family: "Menlo".into(),
-                                                        features: Default::default(),
-                                                        fallbacks: None,
-                                                        weight: FontWeight::NORMAL,
-                                                        style: FontStyle::Normal,
-                                                    },
-                                                    color: colors::TEXT_DIMMED,
-                                                    background_color: None,
-                                                    underline: None,
-                                                    strikethrough: None,
-                                                };
-                                                let line = window
-                                                    .text_system()
-                                                    .shape_line(
-                                                        name.clone().into(),
-                                                        px(9.0),
-                                                        &[run],
-                                                        None,
-                                                    );
-                                                let _ = line.paint(
-                                                    point(
-                                                        bounds.origin.x + px(4.0),
-                                                        bounds.origin.y + px(*row_y),
-                                                    ),
-                                                    px(9.0),
-                                                    window,
-                                                    cx,
-                                                );
-                                            }
+                                    // Counter name labels
+                                    if row_h >= 10.0 {
+                                        for (name, row_y) in &labels {
+                                            let run = TextRun {
+                                                len: name.len(),
+                                                font: Font {
+                                                    family: "Menlo".into(),
+                                                    features: Default::default(),
+                                                    fallbacks: None,
+                                                    weight: FontWeight::NORMAL,
+                                                    style: FontStyle::Normal,
+                                                },
+                                                color: colors::TEXT_DIMMED,
+                                                background_color: None,
+                                                underline: None,
+                                                strikethrough: None,
+                                            };
+                                            let line = window.text_system().shape_line(
+                                                name.clone().into(),
+                                                px(9.0),
+                                                &[run],
+                                                None,
+                                            );
+                                            let _ = line.paint(
+                                                point(
+                                                    bounds.origin.x + px(4.0),
+                                                    bounds.origin.y + px(*row_y),
+                                                ),
+                                                px(9.0),
+                                                window,
+                                                cx,
+                                            );
                                         }
-                                    },
-                                );
+                                    }
+                                });
                             }
                         },
                     )

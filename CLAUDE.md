@@ -35,6 +35,7 @@ No test suite yet. Verify changes by building and visually testing with a trace 
 - `src/views/counter_panel.rs` - Performance counter display (detail sparklines + heatmap overview modes)
 - `src/views/minimap_view.rs` - Full-trace minimap with counter trendline, draggable range handles, pipeline indicator
 - `src/config.rs` - TOML config file parsing for counter presets
+- `src/session.rs` - Session persistence: auto-save/restore UI state (tabs, viewport, cursors, counter modes)
 - `src/interaction/actions.rs` - All GPUI actions (keybindable commands)
 - `src/interaction/keybindings.rs` - Key binding registration
 - `src/theme/` - Dark color constants (`colors::BG_PRIMARY`, `colors::TEXT_PRIMARY`, etc.)
@@ -64,6 +65,14 @@ To work inside DockArea, panels must implement:
 ### Theme
 
 gpui-component's theme is set to `ThemeMode::Dark` in `main.rs`, then fine-tuned to match the app's custom dark palette. The `Theme` struct derefs to `ThemeColor` so you can set fields like `theme.background`, `theme.tab_bar`, etc. directly.
+
+### Session Persistence
+
+UI state is automatically saved/restored across app restarts:
+- **Save**: on Cmd+Q, session state is written to a `.filename.session` JSON file alongside the trace (falls back to `~/.config/reflex/sessions/` if the directory is read-only)
+- **Restore**: when opening a trace, checks for an existing session file and restores viewport position, cursor positions, counter display modes, dock layout preset, and active tab
+- **Graceful degradation**: corrupt/missing session files are silently ignored — the app opens with defaults
+- Session file format is versioned (currently v1) for forward compatibility
 
 ## Conventions
 
