@@ -591,7 +591,10 @@ fn build_segment_index_from_file(
         // Finalized file: read section table to find the segments section.
         file.seek(SeekFrom::Start(header.section_table_offset))
             .map_err(TraceError::Io)?;
-        loop {
+        // Read section entries. The table is terminated by SECTION_END.
+        // Guard against corrupt files with a max iteration count.
+        for _ in 0..64 {
+            let pos = file.stream_position().map_err(TraceError::Io)?;
             let entry = SectionEntry::read_from(&mut file).map_err(TraceError::Io)?;
             if entry.section_type == SECTION_END {
                 break;
@@ -600,6 +603,9 @@ fn build_segment_index_from_file(
                 seg_entries =
                     uscope::segment::read_segment_table(&mut file, entry.offset, entry.size)
                         .map_err(TraceError::Io)?;
+                // read_segment_table seeks away; re-seek to next entry.
+                file.seek(SeekFrom::Start(pos + SectionEntry::SIZE as u64))
+                    .map_err(TraceError::Io)?;
             }
         }
     }
