@@ -1059,24 +1059,10 @@ impl AppView {
                     }
 
                     // Try restoring the full DockArea layout.
-                    let layout_restored = if let Some(ref layout_json) = session.dock_layout {
-                        if let Ok(dock_state) =
-                            serde_json::from_value::<DockAreaState>(layout_json.clone())
-                        {
-                            // Set the thread-local state for panel registration closures.
-                            let trace_state = self.tabs[tab_idx].state.clone();
-                            RESTORE_STATE.with(|s| *s.borrow_mut() = Some(trace_state));
-                            let result = self
-                                .dock_area
-                                .update(cx, |da, cx| da.load(dock_state, window, cx));
-                            RESTORE_STATE.with(|s| *s.borrow_mut() = None);
-                            result.is_ok()
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    };
+                    // Skip dock_layout restore — it can hang on stale sessions
+                    // with mismatched panel counts. Placement + open state are
+                    // sufficient; the dock rebuilds with the right panels.
+                    let layout_restored = false;
 
                     if !layout_restored {
                         // Fall back to default layout with saved placement.
