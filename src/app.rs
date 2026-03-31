@@ -953,12 +953,23 @@ impl AppView {
                     {
                         self.apply_session_to_tab(tab_idx, tab_state, cx);
                     }
-                    // Restore dock placement.
+                    // Restore dock placement and open state.
                     match session.dock_placement.as_str() {
                         "left" => self.queue_placement = DockPlacement::Left,
                         "right" => self.queue_placement = DockPlacement::Right,
                         _ => self.queue_placement = DockPlacement::Bottom,
                     }
+                    // rebuild_panel uses self.queue_placement, then we toggle dock if needed.
+                    self.rebuild_panel(window, cx);
+                    if !session.dock_open {
+                        self.dock_area.update(cx, |da, cx| {
+                            if da.is_dock_open(self.queue_placement, cx) {
+                                da.toggle_dock(self.queue_placement, window, cx);
+                            }
+                        });
+                    }
+                    cx.notify();
+                    return; // skip the default rebuild_panel below
                 }
 
                 self.rebuild_panel(window, cx);
@@ -1043,11 +1054,17 @@ impl AppView {
             _ => "bottom",
         };
 
+        let dock_open = self
+            .dock_area
+            .read(cx)
+            .is_dock_open(self.queue_placement, cx);
+
         Some(session::Session {
             version: 1,
             tabs,
             active_tab: self.active_tab,
             dock_placement: placement.to_string(),
+            dock_open,
         })
     }
 

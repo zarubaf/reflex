@@ -20,6 +20,13 @@ pub struct Session {
     pub active_tab: usize,
     /// Dock placement preset: "bottom", "left", or "right".
     pub dock_placement: String,
+    /// Whether the buffer dock is open.
+    #[serde(default = "default_true")]
+    pub dock_open: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Serialize, Deserialize)]
