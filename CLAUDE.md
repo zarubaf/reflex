@@ -69,8 +69,9 @@ gpui-component's theme is set to `ThemeMode::Dark` in `main.rs`, then fine-tuned
 ### Session Persistence
 
 UI state is automatically saved/restored across app restarts:
-- **Save**: on Cmd+Q, session state is written to a `.filename.session` JSON file alongside the trace (falls back to `~/.config/reflex/sessions/` if the directory is read-only)
-- **Restore**: when opening a trace, checks for an existing session file and restores viewport position, cursor positions, counter display modes, dock layout preset, and active tab
+- **Save**: on Cmd+Q, tab close, tab switch, and layout change — session state is written to a `.filename.session` JSON file alongside the trace (falls back to `~/.config/reflex/sessions/` if the directory is read-only)
+- **Restore**: when opening a trace, checks for an existing session file and restores viewport position, cursor positions, counter display modes, full DockArea layout (panel arrangement, split ratios, buffer panel positions), and active tab
+- **DockArea round-trip**: uses `DockArea::dump()`/`DockArea::load()` via `PanelRegistry` — all panels registered in `register_panels()` (`src/app.rs`). `BufferPanel::dump()` includes `buffer_idx` in `PanelInfo` for correct reconstruction.
 - **Graceful degradation**: corrupt/missing session files are silently ignored — the app opens with defaults
 - Session file format is versioned (currently v1) for forward compatibility
 
