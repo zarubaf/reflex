@@ -1,6 +1,7 @@
 mod app;
 mod config;
 mod interaction;
+mod session;
 mod theme;
 mod title_bar;
 mod trace;

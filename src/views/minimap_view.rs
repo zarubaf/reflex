@@ -75,7 +75,7 @@ const CLICK_THRESHOLD: f32 = 4.0;
 pub struct MinimapView {
     state: Entity<TraceState>,
     focus_handle: FocusHandle,
-    selected_counter: Option<usize>,
+    pub selected_counter: Option<usize>,
     drag_state: Option<MinimapDrag>,
     /// Mouse-down position for click vs drag detection.
     click_start: Option<f32>,

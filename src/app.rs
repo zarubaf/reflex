@@ -10,6 +10,7 @@ use gpui_component::{Icon, IconName};
 
 use crate::interaction::actions::*;
 use crate::interaction::viewport::ViewportState;
+use crate::session;
 use crate::theme::colors;
 use crate::title_bar::render_title_bar;
 use crate::trace::generator::{self, GeneratorConfig};
@@ -930,12 +931,34 @@ impl AppView {
                 });
                 let id = self.next_tab_id;
                 self.next_tab_id += 1;
+                let path_str = path.to_string_lossy().into_owned();
                 self.tabs.push(TabEntry {
                     id,
-                    file_path: Some(path.to_string_lossy().into_owned()),
+                    file_path: Some(path_str),
                     state,
                 });
-                self.active_tab = self.tabs.len() - 1;
+                let tab_idx = self.tabs.len() - 1;
+                self.active_tab = tab_idx;
+
+                // Restore saved session state if available.
+                if let Some(session) = session::load_session(path) {
+                    // Find this tab's state in the session.
+                    let path_str = path.to_string_lossy();
+                    if let Some(tab_state) = session
+                        .tabs
+                        .iter()
+                        .find(|t| t.file_path == path_str.as_ref())
+                    {
+                        self.apply_session_to_tab(tab_idx, tab_state, cx);
+                    }
+                    // Restore dock placement.
+                    match session.dock_placement.as_str() {
+                        "left" => self.queue_placement = DockPlacement::Left,
+                        "right" => self.queue_placement = DockPlacement::Right,
+                        _ => self.queue_placement = DockPlacement::Bottom,
+                    }
+                }
+
                 self.rebuild_panel(window, cx);
             }
             Err(e) => {
@@ -964,6 +987,127 @@ impl AppView {
             }
             self.rebuild_panel(window, cx);
         }
+    }
+
+    // ─── Session persistence ──────────────────────────────────────────────────
+
+    /// Collect current UI state into a Session struct for saving.
+    fn collect_session(&self, cx: &App) -> Option<session::Session> {
+        if self.tabs.is_empty() {
+            return None;
+        }
+        let tabs: Vec<session::TabState> = self
+            .tabs
+            .iter()
+            .map(|tab| {
+                let ts = tab.state.read(cx);
+                let vp = &ts.viewport;
+                let cs = &ts.cursor_state;
+                session::TabState {
+                    file_path: tab.file_path.clone().unwrap_or_default(),
+                    viewport: session::ViewportSnapshot {
+                        scroll_cycle: vp.scroll_cycle,
+                        scroll_row: vp.scroll_row,
+                        pixels_per_cycle: vp.pixels_per_cycle,
+                        row_height: vp.row_height,
+                    },
+                    cursors: session::CursorSnapshot {
+                        cursors: cs
+                            .cursors
+                            .iter()
+                            .map(|c| session::CursorEntry {
+                                cycle: c.cycle,
+                                color_idx: c.color_idx,
+                            })
+                            .collect(),
+                        active_idx: cs.active_idx,
+                    },
+                    counter_state: session::CounterPanelSnapshot {
+                        display_modes: self.counter_panel.read(cx).session_display_modes(),
+                        view_mode: self.counter_panel.read(cx).session_view_mode(),
+                        selected_counter: self.minimap_view.read(cx).selected_counter,
+                        counter_range: ts.counter_range,
+                        overlay_counter: ts.overlay_counter,
+                    },
+                }
+            })
+            .collect();
+
+        let placement = match self.queue_placement {
+            DockPlacement::Left => "left",
+            DockPlacement::Right => "right",
+            _ => "bottom",
+        };
+
+        Some(session::Session {
+            version: 1,
+            tabs,
+            active_tab: self.active_tab,
+            dock_placement: placement.to_string(),
+        })
+    }
+
+    /// Save the current session to disk.
+    fn save_session(&self, cx: &App) {
+        if let Some(session) = self.collect_session(cx) {
+            // Use the first tab's path to determine session file location.
+            if let Some(ref path) = self.tabs[0].file_path {
+                let save_path = session::session_path_for_save(std::path::Path::new(path));
+                session::save_session(&session, &save_path);
+            }
+        }
+    }
+
+    /// Restore session state after opening a trace file.
+    fn apply_session_to_tab(
+        &mut self,
+        tab_idx: usize,
+        tab_state: &session::TabState,
+        cx: &mut Context<Self>,
+    ) {
+        if tab_idx >= self.tabs.len() {
+            return;
+        }
+        let state = self.tabs[tab_idx].state.clone();
+        state.update(cx, |ts, _cx| {
+            // Viewport
+            ts.viewport.scroll_cycle = tab_state.viewport.scroll_cycle;
+            ts.viewport.scroll_row = tab_state.viewport.scroll_row;
+            ts.viewport.pixels_per_cycle = tab_state.viewport.pixels_per_cycle;
+            ts.viewport.row_height = tab_state.viewport.row_height;
+            ts.viewport.clamp();
+
+            // Cursors
+            ts.cursor_state.cursors = tab_state
+                .cursors
+                .cursors
+                .iter()
+                .map(|c| Cursor {
+                    cycle: c.cycle,
+                    color_idx: c.color_idx,
+                })
+                .collect();
+            if !ts.cursor_state.cursors.is_empty() {
+                ts.cursor_state.active_idx = tab_state
+                    .cursors
+                    .active_idx
+                    .min(ts.cursor_state.cursors.len() - 1);
+            }
+
+            // Counter range + overlay
+            ts.counter_range = tab_state.counter_state.counter_range;
+            ts.overlay_counter = tab_state.counter_state.overlay_counter;
+        });
+
+        // Counter panel display modes
+        self.counter_panel.update(cx, |cp, _cx| {
+            cp.restore_session(&tab_state.counter_state);
+        });
+
+        // Minimap selected counter
+        self.minimap_view.update(cx, |mv, _cx| {
+            mv.selected_counter = tab_state.counter_state.selected_counter;
+        });
     }
 
     // ─── Action handlers ─────────────────────────────────────────────────────
@@ -1424,6 +1568,11 @@ impl AppView {
         }
     }
 
+    fn handle_quit(&mut self, _: &Quit, _window: &mut Window, cx: &mut Context<Self>) {
+        self.save_session(cx);
+        cx.quit();
+    }
+
     /// Push the active cursor position to Surfer via WCP.
     fn sync_cursor_to_wcp(&mut self, cx: &mut Context<Self>) {
         let Some(client) = &self.wcp_client else {
@@ -1606,6 +1755,7 @@ impl Render for AppView {
             .on_action(cx.listener(Self::handle_layout_right))
             .on_action(cx.listener(Self::handle_wcp_connect))
             .on_action(cx.listener(Self::handle_wcp_disconnect))
+            .on_action(cx.listener(Self::handle_quit))
             // File drag & drop onto window — opens in new tab.
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
                 if let Some(path) = paths.paths().first() {
