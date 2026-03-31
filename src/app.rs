@@ -1181,6 +1181,23 @@ impl AppView {
                         counter_range: ts.counter_range,
                         overlay_counter: ts.overlay_counter,
                     },
+                    buffer_hidden_columns: {
+                        let mut map = std::collections::HashMap::new();
+                        for bp in &self.buffer_panels {
+                            let bp = bp.read(cx);
+                            let name = ts
+                                .trace
+                                .buffers
+                                .get(bp.buffer_idx)
+                                .map(|b| b.name.clone())
+                                .unwrap_or_default();
+                            let hidden = bp.hidden_column_names();
+                            if !hidden.is_empty() {
+                                map.insert(name, hidden);
+                            }
+                        }
+                        map
+                    },
                 }
             })
             .collect();
@@ -1271,6 +1288,31 @@ impl AppView {
         self.minimap_view.update(cx, |mv, _cx| {
             mv.selected_counter = tab_state.counter_state.selected_counter;
         });
+
+        // Buffer panel hidden columns — collect names first to avoid borrow conflicts.
+        let buffer_names: Vec<(usize, String)> = {
+            let ts = self.tabs[tab_idx].state.read(cx);
+            self.buffer_panels
+                .iter()
+                .map(|bp| {
+                    let idx = bp.read(cx).buffer_idx;
+                    let name = ts
+                        .trace
+                        .buffers
+                        .get(idx)
+                        .map(|b| b.name.clone())
+                        .unwrap_or_default();
+                    (idx, name)
+                })
+                .collect()
+        };
+        for (i, (_, name)) in buffer_names.iter().enumerate() {
+            if let Some(hidden) = tab_state.buffer_hidden_columns.get(name) {
+                self.buffer_panels[i].update(cx, |bp, _cx| {
+                    bp.set_hidden_columns(hidden.clone());
+                });
+            }
+        }
     }
 
     // ─── Action handlers ─────────────────────────────────────────────────────
