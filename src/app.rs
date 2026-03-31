@@ -26,7 +26,6 @@ use crate::views::pipeline_panel::PipelinePanel;
 use crate::views::search_bar::SearchBar;
 use crate::views::status_bar::StatusBar;
 use crate::wcp::WcpClient;
-use gpui_component::dock::DockAreaState;
 use uscope::reader::Reader;
 
 thread_local! {
