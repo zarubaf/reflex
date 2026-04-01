@@ -187,7 +187,7 @@ impl Render for BufferPanel {
                 .map(|(row_idx, (slot, field_values, entity_fields))| {
                     let entity_id = field_values.first().copied().unwrap_or(0) as u32;
 
-                    let instr_row = ts.trace.instructions.iter().position(|i| i.id == entity_id);
+                    let instr_row = ts.trace.row_for_id(entity_id);
                     let disasm = instr_row
                         .map(|r| ts.trace.instructions[r].disasm.clone())
                         .unwrap_or_else(|| format!("entity {}", entity_id));
@@ -316,9 +316,7 @@ impl Render for BufferPanel {
                         .hover(|d| d.bg(colors::GRID_LINE))
                         .on_click(move |_, _, cx| {
                             state.update(cx, |ts, cx| {
-                                if let Some(row) =
-                                    ts.trace.instructions.iter().position(|i| i.id == entity_id)
-                                {
+                                if let Some(row) = ts.trace.row_for_id(entity_id) {
                                     ts.selected_row = Some(row);
                                 }
                                 cx.notify();

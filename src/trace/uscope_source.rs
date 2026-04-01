@@ -480,18 +480,27 @@ pub fn open_uscope(
                     )
                 })
                 .collect();
+            let properties: Vec<(String, u8)> = s
+                .properties
+                .iter()
+                .filter_map(|f| {
+                    schema
+                        .get_string(f.name)
+                        .map(|n| (n.to_string(), f.field_type))
+                })
+                .collect();
             crate::trace::model::BufferInfo {
                 name,
                 storage_id: s.storage_id,
                 capacity: s.num_slots,
                 fields,
+                properties,
             }
         })
         .collect();
 
     // Build SegmentIndex from the file's segment table (no replay needed).
     let segment_index = build_segment_index_from_file(path_str, &reader, ids.period_ps)?;
-
     // Read the TraceSummary from the Reader (embedded in the file by gen-uscope).
     let trace_summary = reader.trace_summary().cloned();
 
@@ -561,7 +570,6 @@ pub fn open_uscope(
 
     // Set max_cycle from header total_time_ps (covers all segments).
     trace.max_cycle_override = Some((reader.header().total_time_ps / ids.period_ps) as u32);
-
     let uctx = UscopeContext::from_ids(&ids, stage_name_indices, &counter_storages);
 
     Ok((reader, trace, segment_index, uctx, trace_summary))
@@ -594,18 +602,21 @@ fn build_segment_index_from_file(
         // Read section entries. The table is terminated by SECTION_END.
         // Guard against corrupt files with a max iteration count.
         for _ in 0..64 {
-            let pos = file.stream_position().map_err(TraceError::Io)?;
-            let entry = SectionEntry::read_from(&mut file).map_err(TraceError::Io)?;
+            let entry = match SectionEntry::read_from(&mut file) {
+                Ok(e) => e,
+                Err(_) => break, // EOF or corrupt — stop gracefully
+            };
             if entry.section_type == SECTION_END {
                 break;
             }
             if entry.section_type == SECTION_SEGMENTS {
-                seg_entries =
+                let next_entry_pos = file.stream_position().unwrap_or(0);
+                if let Ok(entries) =
                     uscope::segment::read_segment_table(&mut file, entry.offset, entry.size)
-                        .map_err(TraceError::Io)?;
-                // read_segment_table seeks away; re-seek to next entry.
-                file.seek(SeekFrom::Start(pos + SectionEntry::SIZE as u64))
-                    .map_err(TraceError::Io)?;
+                {
+                    seg_entries = entries;
+                }
+                let _ = file.seek(SeekFrom::Start(next_entry_pos));
             }
         }
     }
@@ -955,11 +966,21 @@ pub fn parse_uscope(path: &Path) -> Result<(PipelineTrace, Reader, SegmentIndex)
                     )
                 })
                 .collect();
+            let properties: Vec<(String, u8)> = s
+                .properties
+                .iter()
+                .filter_map(|f| {
+                    schema
+                        .get_string(f.name)
+                        .map(|n| (n.to_string(), f.field_type))
+                })
+                .collect();
             crate::trace::model::BufferInfo {
                 name,
                 storage_id: s.storage_id,
                 capacity: s.num_slots,
                 fields,
+                properties,
             }
         })
         .collect();

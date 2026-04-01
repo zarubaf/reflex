@@ -623,6 +623,18 @@ impl TraceState {
             .unwrap_or_default();
 
         let num_fields = buf.fields.len() as u16;
+
+        // Pre-build entity_id → slot index map for O(1) lookup (avoids O(B×E) nested scan).
+        let entity_slot_map: std::collections::HashMap<u64, u16> =
+            if let (Some(es), Some(ref eo)) = (&entities_storage, &entities_offsets) {
+                (0..es.num_slots)
+                    .filter(|&s| es.valid.get(s as usize).copied().unwrap_or(false))
+                    .map(|s| (es.get_field_at(s, eo, 0), s))
+                    .collect()
+            } else {
+                std::collections::HashMap::new()
+            };
+
         let mut result = Vec::new();
 
         for slot in 0..storage.num_slots {
@@ -638,24 +650,15 @@ impl TraceState {
                 field_values.push(storage.get_field_at(slot, &offsets, fi));
             }
 
-            // Look up entity fields from the entities storage.
+            // Look up entity fields via pre-built map (O(1) per slot).
             let mut entity_fields = Vec::new();
             if let (Some(es), Some(ref eo)) = (&entities_storage, &entities_offsets) {
-                // Find the slot in entities storage that has this entity_id.
-                for es_slot in 0..es.num_slots {
-                    if !es.valid.get(es_slot as usize).copied().unwrap_or(false) {
-                        continue;
-                    }
-                    let eid = es.get_field_at(es_slot, eo, 0);
-                    if eid == entity_id {
-                        // Read all fields (skip entity_id at 0, pc at 1).
-                        for (fi, name) in entity_field_names.iter().enumerate().skip(2) {
-                            let val = es.get_field_at(es_slot, eo, fi as u16);
-                            if val != 0 {
-                                entity_fields.push((name.clone(), val));
-                            }
+                if let Some(&es_slot) = entity_slot_map.get(&entity_id) {
+                    for (fi, name) in entity_field_names.iter().enumerate().skip(2) {
+                        let val = es.get_field_at(es_slot, eo, fi as u16);
+                        if val != 0 {
+                            entity_fields.push((name.clone(), val));
                         }
-                        break;
                     }
                 }
             }
@@ -780,6 +783,8 @@ pub struct AppView {
     wcp_client: Option<Arc<WcpClient>>,
     /// Last cursor cycle sent to WCP, to avoid redundant sends.
     last_wcp_cursor: Option<u64>,
+    /// Last session save timestamp for debouncing (save at most once per 500ms).
+    last_session_save: Instant,
 }
 
 impl AppView {
@@ -838,6 +843,7 @@ impl AppView {
             pending_open_urls,
             wcp_client: None,
             last_wcp_cursor: None,
+            last_session_save: Instant::now(),
         };
 
         if let Some(ref path) = file_path {
@@ -1210,13 +1216,22 @@ impl AppView {
         })
     }
 
-    /// Save the current session to disk.
-    fn save_session(&self, cx: &App) {
+    /// Save the current session to disk (debounced: at most once per 500ms).
+    /// Use `save_session_now` to bypass debouncing (e.g., on quit).
+    fn save_session(&mut self, cx: &App) {
+        if self.last_session_save.elapsed() < std::time::Duration::from_millis(500) {
+            return;
+        }
+        self.save_session_now(cx);
+    }
+
+    /// Save session immediately, bypassing debounce.
+    fn save_session_now(&mut self, cx: &App) {
         if let Some(session) = self.collect_session(cx) {
-            // Use the first tab's path to determine session file location.
             if let Some(ref path) = self.tabs[0].file_path {
                 let save_path = session::session_path_for_save(std::path::Path::new(path));
                 session::save_session(&session, &save_path);
+                self.last_session_save = Instant::now();
             }
         }
     }
@@ -1758,7 +1773,7 @@ impl AppView {
     }
 
     fn handle_quit(&mut self, _: &Quit, _window: &mut Window, cx: &mut Context<Self>) {
-        self.save_session(cx);
+        self.save_session_now(cx);
         cx.quit();
     }
 
