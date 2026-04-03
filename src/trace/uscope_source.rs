@@ -480,13 +480,18 @@ pub fn open_uscope(
                     )
                 })
                 .collect();
-            let properties: Vec<(String, u8)> = s
+            let properties: Vec<crate::trace::model::BufferPropertyDef> = s
                 .properties
                 .iter()
                 .filter_map(|f| {
                     schema
                         .get_string(f.name)
-                        .map(|n| (n.to_string(), f.field_type))
+                        .map(|n| crate::trace::model::BufferPropertyDef {
+                            name: n.to_string(),
+                            field_type: f.field_type,
+                            role: f.role,
+                            pair_id: f.pair_id,
+                        })
                 })
                 .collect();
             crate::trace::model::BufferInfo {
@@ -966,13 +971,18 @@ pub fn parse_uscope(path: &Path) -> Result<(PipelineTrace, Reader, SegmentIndex)
                     )
                 })
                 .collect();
-            let properties: Vec<(String, u8)> = s
+            let properties: Vec<crate::trace::model::BufferPropertyDef> = s
                 .properties
                 .iter()
                 .filter_map(|f| {
                     schema
                         .get_string(f.name)
-                        .map(|n| (n.to_string(), f.field_type))
+                        .map(|n| crate::trace::model::BufferPropertyDef {
+                            name: n.to_string(),
+                            field_type: f.field_type,
+                            role: f.role,
+                            pair_id: f.pair_id,
+                        })
                 })
                 .collect();
             crate::trace::model::BufferInfo {

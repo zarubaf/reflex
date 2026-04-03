@@ -555,31 +555,31 @@ impl TraceState {
     /// Returns an empty vec if no reader is available or the query fails.
     /// Query buffer storage state at a given cycle.
     ///
-    /// Returns a Vec of `(slot_index, field_values, entity_fields)` for occupied slots.
-    /// `entity_fields` contains `(name, value)` pairs from the entities storage
-    /// for the entity_id in that slot (e.g., rbid, fpb_id, ready_time_ps).
+    /// Returns occupied slots with field values, entity fields, and storage-level
+    /// property values (with pointer-pair metadata for ROB visualization).
     pub fn query_buffer_state(
         &mut self,
         buffer_idx: usize,
         cycle: u32,
-    ) -> Vec<crate::views::buffer_panel::BufferSlot> {
+    ) -> crate::views::buffer_panel::BufferQueryResult {
+        use crate::views::buffer_panel::{BufferQueryResult, PropertyValue};
         let buf = match self.trace.buffers.get(buffer_idx) {
             Some(b) => b.clone(),
-            None => return Vec::new(),
+            None => return BufferQueryResult::default(),
         };
         let period_ps = match self.trace.period_ps {
             Some(p) => p,
-            None => return Vec::new(),
+            None => return BufferQueryResult::default(),
         };
         let reader = match self.reader.as_mut() {
             Some(r) => r,
-            None => return Vec::new(),
+            None => return BufferQueryResult::default(),
         };
 
         let time_ps = cycle as u64 * period_ps;
         let trace_state = match reader.state_at(time_ps) {
             Ok(s) => s,
-            Err(_) => return Vec::new(),
+            Err(_) => return BufferQueryResult::default(),
         };
 
         let storage_id = buf.storage_id;
@@ -589,13 +589,13 @@ impl TraceState {
             .find(|s| s.storage_id == storage_id)
         {
             Some(s) => s,
-            None => return Vec::new(),
+            None => return BufferQueryResult::default(),
         };
 
         let offsets = reader.field_offsets().get(storage_id as usize).cloned();
         let offsets = match offsets {
             Some(o) => o,
-            None => return Vec::new(),
+            None => return BufferQueryResult::default(),
         };
 
         // Find the entities storage and its field names for entity field lookup.
@@ -665,7 +665,28 @@ impl TraceState {
 
             result.push((slot, field_values, entity_fields));
         }
-        result
+
+        // Read storage-level property values (v0.3: pointer pairs, etc.).
+        let mut properties = Vec::new();
+        let buf_schema = schema.storages.iter().find(|s| s.storage_id == storage_id);
+        if let Some(bsd) = buf_schema {
+            for (pi, prop) in bsd.properties.iter().enumerate() {
+                let val = storage.get_property(&offsets, pi as u16);
+                let name = schema.get_string(prop.name).unwrap_or("?").to_string();
+                properties.push(PropertyValue {
+                    name,
+                    value: val,
+                    role: prop.role,
+                    pair_id: prop.pair_id,
+                });
+            }
+        }
+
+        BufferQueryResult {
+            slots: result,
+            properties,
+            capacity: buf.capacity,
+        }
     }
 
     /// Record a frame and update FPS.

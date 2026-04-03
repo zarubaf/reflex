@@ -13,8 +13,20 @@ pub struct BufferInfo {
     pub capacity: u16,
     /// Fields defined on this buffer: (name, field_type as u8).
     pub fields: Vec<(String, u8)>,
-    /// Storage-level property definitions: (name, field_type as u8). v0.3.
-    pub properties: Vec<(String, u8)>,
+    /// Storage-level property definitions with pointer-pair metadata. v0.3.
+    pub properties: Vec<BufferPropertyDef>,
+}
+
+/// A storage-level property definition with pointer-pair metadata.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct BufferPropertyDef {
+    pub name: String,
+    pub field_type: u8,
+    /// 0=plain, 1=HEAD_PTR, 2=TAIL_PTR.
+    pub role: u8,
+    /// Pointer pair grouping (head/tail with same pair_id form a pair).
+    pub pair_id: u8,
 }
 
 /// A single stage span within an instruction's pipeline execution.

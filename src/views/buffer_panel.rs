@@ -40,6 +40,25 @@ fn field_display_name(name: &str) -> &str {
 /// Occupied buffer slot: (slot_index, buffer_field_values, entity_field_name_value_pairs).
 pub type BufferSlot = (u16, Vec<u64>, Vec<(String, u64)>);
 
+/// Property value with pointer-pair metadata.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct PropertyValue {
+    pub name: String,
+    pub value: u64,
+    pub role: u8, // 0=plain, 1=HEAD_PTR, 2=TAIL_PTR
+    pub pair_id: u8,
+}
+
+/// Result of querying buffer state at a cycle.
+#[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
+pub struct BufferQueryResult {
+    pub slots: Vec<BufferSlot>,
+    pub properties: Vec<PropertyValue>,
+    pub capacity: u16,
+}
+
 /// A dynamic buffer panel that displays per-cycle buffer state from uscope.
 ///
 /// Created once per `BufferInfo` entry in `PipelineTrace::buffers`.
@@ -48,10 +67,10 @@ pub struct BufferPanel {
     state: Entity<TraceState>,
     focus_handle: FocusHandle,
     pub buffer_idx: usize,
-    /// Cached cycle for which `cached_slots` is valid.
+    /// Cached cycle for which `cached_result` is valid.
     cached_cycle: u32,
-    /// Cached occupied slots: (slot_index, field_values, entity_fields).
-    cached_slots: Vec<BufferSlot>,
+    /// Cached buffer query result (slots + properties).
+    cached_result: BufferQueryResult,
     /// Entity field names discovered from the first query (stable per trace).
     entity_field_names: Vec<String>,
     /// Hidden column names.
@@ -74,7 +93,7 @@ impl BufferPanel {
             focus_handle: cx.focus_handle(),
             buffer_idx,
             cached_cycle: u32::MAX,
-            cached_slots: Vec::new(),
+            cached_result: BufferQueryResult::default(),
             entity_field_names: Vec::new(),
             hidden_columns: hidden,
         }
@@ -113,25 +132,76 @@ impl Render for BufferPanel {
         if cursor_cycle != self.cached_cycle {
             self.cached_cycle = cursor_cycle;
             let buffer_idx = self.buffer_idx;
-            let new_slots = self.state.update(cx, |ts, _cx| {
+            let new_result = self.state.update(cx, |ts, _cx| {
                 ts.query_buffer_state(buffer_idx, cursor_cycle)
             });
             // Discover entity field names from first non-empty result.
             if self.entity_field_names.is_empty() {
-                if let Some((_, _, ref ef)) = new_slots.first() {
+                if let Some((_, _, ref ef)) = new_result.slots.first() {
                     self.entity_field_names = ef.iter().map(|(n, _)| n.clone()).collect();
                 }
             }
-            self.cached_slots = new_slots;
+            self.cached_result = new_result;
         }
 
         let ts = self.state.read(cx);
         let period_ps = ts.trace.period_ps.unwrap_or(1);
 
         let content = if let Some(buf) = ts.trace.buffers.get(self.buffer_idx) {
-            let occupied = self.cached_slots.len();
+            let occupied = self.cached_result.slots.len();
             let capacity = buf.capacity;
             let _field_types: Vec<u8> = buf.fields.iter().map(|(_, ft)| *ft).collect();
+
+            // Detect pointer pairs from properties.
+            let has_pointers = buf.properties.iter().any(|p| p.role != 0);
+
+            // Build pointer pair info from cached property values.
+            struct PointerPair {
+                head: Option<u16>,
+                tail: Option<u16>,
+                pair_id: u8,
+            }
+            let mut pairs: Vec<PointerPair> = Vec::new();
+            if has_pointers {
+                for pv in &self.cached_result.properties {
+                    if pv.role == 0 {
+                        continue;
+                    }
+                    let pair = pairs.iter_mut().find(|p| p.pair_id == pv.pair_id);
+                    match pair {
+                        Some(p) => {
+                            if pv.role == 1 {
+                                p.head = Some(pv.value as u16);
+                            } else {
+                                p.tail = Some(pv.value as u16);
+                            }
+                        }
+                        None => {
+                            let mut pp = PointerPair {
+                                head: None,
+                                tail: None,
+                                pair_id: pv.pair_id,
+                            };
+                            if pv.role == 1 {
+                                pp.head = Some(pv.value as u16);
+                            } else {
+                                pp.tail = Some(pv.value as u16);
+                            }
+                            pairs.push(pp);
+                        }
+                    }
+                }
+            }
+
+            // Compute fill level from pair 0.
+            let fill_level = pairs.first().and_then(|p| match (p.head, p.tail) {
+                (Some(h), Some(t)) => Some(if t >= h { t - h } else { capacity - h + t }),
+                _ => None,
+            });
+
+            // Slot-to-data lookup.
+            let slot_data: std::collections::HashMap<u16, &BufferSlot> =
+                self.cached_result.slots.iter().map(|s| (s.0, s)).collect();
 
             // Visible entity field names.
             let visible_fields: Vec<&String> = self
@@ -142,6 +212,10 @@ impl Render for BufferPanel {
 
             // ── Header row ───────────────────────────────────────────
             let mut header_children: Vec<AnyElement> = Vec::new();
+            // Pointer margin column (only for buffers with pointers).
+            if has_pointers {
+                header_children.push(div().w(px(10.0)).flex_shrink_0().into_any_element());
+            }
             header_children.push(
                 div()
                     .w(px(SLOT_COL_W))
@@ -180,17 +254,48 @@ impl Render for BufferPanel {
             // ── Data rows ────────────────────────────────────────────
             let ts = self.state.read(cx);
             let selected_row = ts.selected_row;
-            let slot_rows: Vec<AnyElement> = self
-                .cached_slots
+
+            // Helper: check if a slot is in a pointer pair's range (with wrap).
+            let in_range = |slot: u16, head: u16, tail: u16, _cap: u16| -> bool {
+                if tail >= head {
+                    slot >= head && slot < tail
+                } else {
+                    slot >= head || slot < tail
+                }
+            };
+
+            // Determine which slots to iterate.
+            let slot_indices: Vec<u16> = if has_pointers {
+                (0..capacity).collect() // Fixed: all slots
+            } else {
+                self.cached_result
+                    .slots
+                    .iter()
+                    .map(|(s, _, _)| *s)
+                    .collect() // Sparse: occupied only
+            };
+
+            let slot_rows: Vec<AnyElement> = slot_indices
                 .iter()
                 .enumerate()
-                .map(|(row_idx, (slot, field_values, entity_fields))| {
-                    let entity_id = field_values.first().copied().unwrap_or(0) as u32;
+                .map(|(row_idx, &slot)| {
+                    let slot_entry = slot_data.get(&slot);
+                    let (field_values, entity_fields) = match slot_entry {
+                        Some((_, fv, ef)) => (Some(fv), Some(ef)),
+                        None => (None, None),
+                    };
+                    let entity_id =
+                        field_values.and_then(|fv| fv.first().copied()).unwrap_or(0) as u32;
+                    let is_occupied = entity_id != 0 && slot_entry.is_some();
 
-                    let instr_row = ts.trace.row_for_id(entity_id);
+                    let instr_row = if is_occupied {
+                        ts.trace.row_for_id(entity_id)
+                    } else {
+                        None
+                    };
                     let disasm = instr_row
                         .map(|r| ts.trace.instructions[r].disasm.clone())
-                        .unwrap_or_else(|| format!("entity {}", entity_id));
+                        .unwrap_or_default();
                     let stage_name = instr_row.and_then(|r| {
                         let stages = ts.trace.stages_for(r);
                         stages
@@ -208,13 +313,13 @@ impl Render for BufferPanel {
                         })
                         .unwrap_or(false);
 
-                    // Fade flushed instructions.
-                    let text_primary = if is_flushed {
+                    // Fade flushed or empty slots.
+                    let text_primary = if is_flushed || !is_occupied {
                         colors::TEXT_DIMMED
                     } else {
                         colors::TEXT_PRIMARY
                     };
-                    let text_secondary = if is_flushed {
+                    let text_secondary = if is_flushed || !is_occupied {
                         Hsla {
                             a: 0.25,
                             ..colors::TEXT_DIMMED
@@ -224,6 +329,78 @@ impl Render for BufferPanel {
                     };
 
                     let mut row_children: Vec<AnyElement> = Vec::new();
+
+                    // Pointer margin (left arrow indicator).
+                    if has_pointers {
+                        let mut marker = String::new();
+                        let mut marker_color = colors::TEXT_DIMMED;
+                        // Check if this slot matches any pointer.
+                        for (pi, pair) in pairs.iter().enumerate() {
+                            if pair.head == Some(slot) {
+                                marker = "▸".to_string();
+                                marker_color = if pi == 0 {
+                                    Hsla {
+                                        h: 120.0 / 360.0,
+                                        s: 0.7,
+                                        l: 0.5,
+                                        a: 1.0,
+                                    } // green
+                                } else {
+                                    Hsla {
+                                        h: 30.0 / 360.0,
+                                        s: 0.8,
+                                        l: 0.5,
+                                        a: 1.0,
+                                    } // orange
+                                };
+                            }
+                            if pair.tail == Some(slot) {
+                                marker = "▸".to_string();
+                                marker_color = if pi == 0 {
+                                    Hsla {
+                                        h: 0.0 / 360.0,
+                                        s: 0.7,
+                                        l: 0.5,
+                                        a: 1.0,
+                                    } // red
+                                } else {
+                                    Hsla {
+                                        h: 30.0 / 360.0,
+                                        s: 0.8,
+                                        l: 0.5,
+                                        a: 1.0,
+                                    } // orange
+                                };
+                            }
+                        }
+                        // Region line: show vertical bar if inside pair 0's range.
+                        let in_pair0 = pairs
+                            .first()
+                            .and_then(|p| match (p.head, p.tail) {
+                                (Some(h), Some(t)) => Some(in_range(slot, h, t, capacity)),
+                                _ => None,
+                            })
+                            .unwrap_or(false);
+
+                        if marker.is_empty() && in_pair0 {
+                            marker = "│".to_string();
+                            marker_color = Hsla {
+                                h: 210.0 / 360.0,
+                                s: 0.5,
+                                l: 0.5,
+                                a: 0.4,
+                            };
+                        }
+
+                        row_children.push(
+                            div()
+                                .w(px(10.0))
+                                .flex_shrink_0()
+                                .text_color(marker_color)
+                                .child(marker)
+                                .into_any_element(),
+                        );
+                    }
 
                     // Slot number.
                     row_children.push(
@@ -273,7 +450,8 @@ impl Render for BufferPanel {
 
                     // Entity fields — only visible ones, in consistent order.
                     let ef_map: std::collections::HashMap<&str, u64> = entity_fields
-                        .iter()
+                        .into_iter()
+                        .flatten()
                         .map(|(n, v)| (n.as_str(), *v))
                         .collect();
                     for name in &visible_fields {
@@ -313,6 +491,26 @@ impl Render for BufferPanel {
                         .when(!is_selected && row_idx % 2 == 0, |d| {
                             d.bg(colors::BG_SECONDARY)
                         })
+                        .when(has_pointers && !is_selected, |d| {
+                            // Tint occupied region.
+                            let in_p0 = pairs
+                                .first()
+                                .and_then(|p| match (p.head, p.tail) {
+                                    (Some(h), Some(t)) => Some(in_range(slot, h, t, capacity)),
+                                    _ => None,
+                                })
+                                .unwrap_or(false);
+                            if in_p0 {
+                                d.bg(Hsla {
+                                    h: 210.0 / 360.0,
+                                    s: 0.4,
+                                    l: 0.18,
+                                    a: 1.0,
+                                })
+                            } else {
+                                d
+                            }
+                        })
                         .hover(|d| d.bg(colors::GRID_LINE))
                         .on_click(move |_, _, cx| {
                             state.update(cx, |ts, cx| {
@@ -340,10 +538,22 @@ impl Render for BufferPanel {
                         .text_color(colors::TEXT_DIMMED)
                         .border_b_1()
                         .border_color(colors::GRID_LINE)
-                        .child(format!(
-                            "{} ({}/{}) @ cycle {}",
-                            buf.name, occupied, capacity, cursor_cycle
-                        )),
+                        .child(if let Some(fill) = fill_level {
+                            let pct = if capacity > 0 {
+                                fill as f32 / capacity as f32 * 100.0
+                            } else {
+                                0.0
+                            };
+                            format!(
+                                "{} ({}/{}) @ cycle {} — fill: {} ({:.0}%)",
+                                buf.name, occupied, capacity, cursor_cycle, fill, pct
+                            )
+                        } else {
+                            format!(
+                                "{} ({}/{}) @ cycle {}",
+                                buf.name, occupied, capacity, cursor_cycle
+                            )
+                        }),
                 )
                 // Scrollable table.
                 .child(
