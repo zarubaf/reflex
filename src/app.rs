@@ -1084,11 +1084,26 @@ impl AppView {
                         _ => self.queue_placement = DockPlacement::Bottom,
                     }
 
-                    // Try restoring the full DockArea layout.
-                    // Skip dock_layout restore — it can hang on stale sessions
-                    // with mismatched panel counts. Placement + open state are
-                    // sufficient; the dock rebuilds with the right panels.
-                    let layout_restored = false;
+                    // Try restoring the full DockArea layout from session.
+                    let layout_restored = if let Some(ref layout_json) = session.dock_layout {
+                        if let Ok(dock_state) = serde_json::from_value::<
+                            gpui_component::dock::DockAreaState,
+                        >(layout_json.clone())
+                        {
+                            let trace_state = self.tabs[tab_idx].state.clone();
+                            RESTORE_STATE.with(|s| *s.borrow_mut() = Some(trace_state));
+                            let ok = self
+                                .dock_area
+                                .update(cx, |da, cx| da.load(dock_state, window, cx))
+                                .is_ok();
+                            RESTORE_STATE.with(|s| *s.borrow_mut() = None);
+                            ok
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
 
                     if !layout_restored {
                         // Fall back to default layout with saved placement.
