@@ -14,7 +14,7 @@ const STAGE_COL_W: f32 = 28.0;
 /// Minimum width for the disasm column.
 const DISASM_MIN_W: f32 = 180.0;
 /// Width for the pointer margin column.
-const POINTER_COL_W: f32 = 90.0;
+const POINTER_COL_W: f32 = 14.0;
 
 /// Format an entity field value for display.
 fn format_field(name: &str, value: u64, period_ps: u64) -> String {
@@ -222,8 +222,6 @@ impl Render for BufferPanel {
                         .flex_shrink_0()
                         .border_r_1()
                         .border_color(colors::GRID_LINE)
-                        .text_color(colors::TEXT_DIMMED)
-                        .child("Ptr")
                         .into_any_element(),
                 );
             }
@@ -371,25 +369,22 @@ impl Render for BufferPanel {
                             }, // pair 2+: purple
                         ];
 
-                        // Check ALL property pointers (not just pairs).
+                        // Check ALL properties whose value matches this slot index.
                         let mut marker = String::new();
                         let mut marker_color = colors::TEXT_DIMMED;
-                        let mut tooltip_name = String::new();
+                        let mut _tooltip_name = String::new();
 
                         for pv in &self.cached_result.properties {
-                            if pv.role == 0 {
-                                continue;
-                            }
                             if pv.value as u16 == slot {
                                 marker = "▸".to_string();
                                 let ci = match (pv.role, pv.pair_id) {
                                     (1, 0) => 0,                              // head pair 0: green
                                     (2, 0) => 1,                              // tail pair 0: red
                                     (_, p) if p >= 1 => 2 + (p as usize % 2), // other pairs
-                                    _ => 2,
+                                    _ => 2,                                   // plain/unknown
                                 };
                                 marker_color = pair_colors[ci.min(pair_colors.len() - 1)];
-                                tooltip_name = pv.name.clone();
+                                _tooltip_name = pv.name.clone();
                             }
                         }
 
@@ -412,21 +407,19 @@ impl Render for BufferPanel {
                             };
                         }
 
-                        // Pointer margin: fixed-width with arrow + name.
+                        // Pointer margin: narrow column with just the arrow symbol.
                         row_children.push(
                             div()
+                                .id(("ptr-margin", row_idx))
                                 .w(px(POINTER_COL_W))
                                 .flex_shrink_0()
                                 .flex()
                                 .items_center()
-                                .overflow_x_hidden()
+                                .justify_center()
                                 .text_color(marker_color)
                                 .border_r_1()
                                 .border_color(colors::GRID_LINE)
-                                .when(!tooltip_name.is_empty(), |d| {
-                                    d.child(format!("{} {}", marker, tooltip_name))
-                                })
-                                .when(tooltip_name.is_empty(), |d| d.child(marker))
+                                .child(marker)
                                 .into_any_element(),
                         );
                     }
