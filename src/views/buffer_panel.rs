@@ -13,6 +13,8 @@ const SLOT_COL_W: f32 = 40.0;
 const STAGE_COL_W: f32 = 28.0;
 /// Minimum width for the disasm column.
 const DISASM_MIN_W: f32 = 180.0;
+/// Width for the pointer margin column.
+const POINTER_COL_W: f32 = 90.0;
 
 /// Format an entity field value for display.
 fn format_field(name: &str, value: u64, period_ps: u64) -> String {
@@ -214,7 +216,16 @@ impl Render for BufferPanel {
             let mut header_children: Vec<AnyElement> = Vec::new();
             // Pointer margin column (only for buffers with pointers).
             if has_pointers {
-                header_children.push(div().w(px(10.0)).flex_shrink_0().into_any_element());
+                header_children.push(
+                    div()
+                        .w(px(POINTER_COL_W))
+                        .flex_shrink_0()
+                        .border_r_1()
+                        .border_color(colors::GRID_LINE)
+                        .text_color(colors::TEXT_DIMMED)
+                        .child("Ptr")
+                        .into_any_element(),
+                );
             }
             header_children.push(
                 div()
@@ -330,50 +341,59 @@ impl Render for BufferPanel {
 
                     let mut row_children: Vec<AnyElement> = Vec::new();
 
-                    // Pointer margin (left arrow indicator).
+                    // Pointer margin (left arrow indicator + region line).
                     if has_pointers {
+                        // Color palette for pointer pairs.
+                        let pair_colors: &[Hsla] = &[
+                            Hsla {
+                                h: 120.0 / 360.0,
+                                s: 0.7,
+                                l: 0.5,
+                                a: 1.0,
+                            }, // pair 0: green
+                            Hsla {
+                                h: 0.0 / 360.0,
+                                s: 0.7,
+                                l: 0.5,
+                                a: 1.0,
+                            }, // pair 0 tail: red
+                            Hsla {
+                                h: 30.0 / 360.0,
+                                s: 0.8,
+                                l: 0.5,
+                                a: 1.0,
+                            }, // pair 1+: orange
+                            Hsla {
+                                h: 280.0 / 360.0,
+                                s: 0.6,
+                                l: 0.5,
+                                a: 1.0,
+                            }, // pair 2+: purple
+                        ];
+
+                        // Check ALL property pointers (not just pairs).
                         let mut marker = String::new();
                         let mut marker_color = colors::TEXT_DIMMED;
-                        // Check if this slot matches any pointer.
-                        for (pi, pair) in pairs.iter().enumerate() {
-                            if pair.head == Some(slot) {
-                                marker = "▸".to_string();
-                                marker_color = if pi == 0 {
-                                    Hsla {
-                                        h: 120.0 / 360.0,
-                                        s: 0.7,
-                                        l: 0.5,
-                                        a: 1.0,
-                                    } // green
-                                } else {
-                                    Hsla {
-                                        h: 30.0 / 360.0,
-                                        s: 0.8,
-                                        l: 0.5,
-                                        a: 1.0,
-                                    } // orange
-                                };
+                        let mut tooltip_name = String::new();
+
+                        for pv in &self.cached_result.properties {
+                            if pv.role == 0 {
+                                continue;
                             }
-                            if pair.tail == Some(slot) {
+                            if pv.value as u16 == slot {
                                 marker = "▸".to_string();
-                                marker_color = if pi == 0 {
-                                    Hsla {
-                                        h: 0.0 / 360.0,
-                                        s: 0.7,
-                                        l: 0.5,
-                                        a: 1.0,
-                                    } // red
-                                } else {
-                                    Hsla {
-                                        h: 30.0 / 360.0,
-                                        s: 0.8,
-                                        l: 0.5,
-                                        a: 1.0,
-                                    } // orange
+                                let ci = match (pv.role, pv.pair_id) {
+                                    (1, 0) => 0,                              // head pair 0: green
+                                    (2, 0) => 1,                              // tail pair 0: red
+                                    (_, p) if p >= 1 => 2 + (p as usize % 2), // other pairs
+                                    _ => 2,
                                 };
+                                marker_color = pair_colors[ci.min(pair_colors.len() - 1)];
+                                tooltip_name = pv.name.clone();
                             }
                         }
-                        // Region line: show vertical bar if inside pair 0's range.
+
+                        // Solid region line if inside pair 0's range.
                         let in_pair0 = pairs
                             .first()
                             .and_then(|p| match (p.head, p.tail) {
@@ -383,21 +403,30 @@ impl Render for BufferPanel {
                             .unwrap_or(false);
 
                         if marker.is_empty() && in_pair0 {
-                            marker = "│".to_string();
+                            marker = "┃".to_string(); // solid line
                             marker_color = Hsla {
                                 h: 210.0 / 360.0,
                                 s: 0.5,
                                 l: 0.5,
-                                a: 0.4,
+                                a: 0.6,
                             };
                         }
 
+                        // Pointer margin: fixed-width with arrow + name.
                         row_children.push(
                             div()
-                                .w(px(10.0))
+                                .w(px(POINTER_COL_W))
                                 .flex_shrink_0()
+                                .flex()
+                                .items_center()
+                                .overflow_x_hidden()
                                 .text_color(marker_color)
-                                .child(marker)
+                                .border_r_1()
+                                .border_color(colors::GRID_LINE)
+                                .when(!tooltip_name.is_empty(), |d| {
+                                    d.child(format!("{} {}", marker, tooltip_name))
+                                })
+                                .when(tooltip_name.is_empty(), |d| d.child(marker))
                                 .into_any_element(),
                         );
                     }
