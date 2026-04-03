@@ -1811,8 +1811,8 @@ impl AppView {
             return;
         };
         let cycle = ts.cursor_state.cursors[ts.cursor_state.active_idx].cycle;
-        // TODO: make configurable — currently assumes VCD $timescale 100ps.
-        let timestamp = ((cycle * period_ps as f64) / 100.0) as u64;
+        // Send timestamp in picoseconds — WCP uses absolute time units.
+        let timestamp = (cycle * period_ps as f64) as u64;
 
         // Avoid redundant sends.
         if self.last_wcp_cursor == Some(timestamp) {
