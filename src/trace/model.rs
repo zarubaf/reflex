@@ -332,7 +332,6 @@ macro_rules! static_assertions_size {
         };
     };
 }
-use static_assertions_size;
 
 static_assertions_size!(StageSpan, 12);
 
