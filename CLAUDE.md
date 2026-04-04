@@ -16,6 +16,18 @@ No test suite yet. Verify changes by building and visually testing with a trace 
 
 ## Architecture
 
+### Three-Layer Architecture
+
+```
+Reflex (GUI)  ←  uscope-cpu (protocol)  ←  uscope (transport)
+```
+
+- **uscope** (`uscope/crates/uscope/`): Format-only transport layer. Reader, writer, schema, checkpoints, delta replay, mipmaps. No protocol knowledge.
+- **uscope-cpu** (`uscope/crates/uscope-cpu/`): CPU protocol library. `CpuTrace` provides instruction lifecycle, counters, buffers, lazy loading, performance analysis. Shared by Reflex, uscope-cli, and uscope-mcp.
+- **uscope-cli** (`uscope/crates/uscope-cli/`): CLI for trace inspection (info, state, timeline, counters, buffers).
+- **uscope-mcp** (`uscope/crates/uscope-mcp/`): MCP server for AI-assisted trace debugging with Claude.
+- **Reflex**: GUI consumer — renders data from uscope-cpu. Currently has its own protocol logic in `uscope_source.rs` (migration to uscope-cpu planned).
+
 ### Core Data Flow
 
 `TraceState` (Entity) is the shared state observed by all panels. It holds the `PipelineTrace` (parsed trace data), viewport state, cursor positions, and selection. Panels read from it during render; scroll/zoom handlers update it via `state.update(cx, ...)` and call `cx.notify()`.
@@ -26,7 +38,7 @@ No test suite yet. Verify changes by building and visually testing with a trace 
 - `src/app.rs` - `AppView` root view: tab management, DockArea setup, action handlers, panel lifecycle
 - `src/trace/model.rs` - `PipelineTrace`, `Instruction`, `StageSpan`, `QueueOccupancy` - all trace data structures
 - `src/trace/konata.rs` - Konata format parser
-- `src/trace/uscope_source.rs` - uscope binary format parser (via `uscope` crate)
+- `src/trace/uscope_source.rs` - uscope binary format parser (to be migrated to `uscope-cpu`)
 - `src/trace/generator.rs` - Synthetic trace generator for testing
 - `src/views/pipeline_panel.rs` - Splits into label pane (left) + timeline pane (right) with resizable splitter
 - `src/views/timeline_pane.rs` - Canvas-based pipeline stage rendering, custom scroll/zoom via `on_scroll_wheel`
