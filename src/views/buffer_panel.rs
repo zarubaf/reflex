@@ -477,11 +477,12 @@ impl Render for BufferPanel {
                         .map(|(n, v)| (n.as_str(), *v))
                         .collect();
                     for name in &visible_fields {
-                        let val = ef_map.get(name.as_str()).copied().unwrap_or(0);
-                        let text = if val == 0 {
+                        let text = if !is_occupied {
                             String::new()
-                        } else {
+                        } else if let Some(&val) = ef_map.get(name.as_str()) {
                             format_field(name, val, period_ps)
+                        } else {
+                            String::new()
                         };
                         row_children.push(
                             div()
