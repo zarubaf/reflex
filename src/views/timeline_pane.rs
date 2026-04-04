@@ -282,7 +282,7 @@ impl Render for TimelinePane {
                                 // ONLY when scrolled past loaded rows. Don't expand
                                 // load range to cycle 0 just because scroll_row is 0.
                                 if row_end > row_count {
-                                    if let Some(ref summary) = ts.trace_summary {
+                                    if let Some(summary) = ts.trace_summary() {
                                         let rs = row_start.max(row_count);
                                         let re = row_end.min(summary.total_instructions as usize);
                                         load_start = load_start.min(summary.row_to_cycle(rs));

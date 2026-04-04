@@ -150,7 +150,7 @@ impl Render for LabelPane {
                                 ts.viewport.clone(),
                                 ts.selected_row,
                                 Arc::clone(&ts.trace),
-                                ts.trace_summary.clone(),
+                                ts.trace_summary().cloned(),
                             )
                         };
                         paint_labels(

@@ -1,93 +1,13 @@
 use std::collections::HashMap;
-use std::ops::Range;
+
+// Re-export shared types from the uscope-cpu protocol library.
+pub use uscope_cpu::types::{
+    BufferInfo, CounterDisplayMode, CounterSeries, DepKind, Dependency, InstructionData,
+    RetireStatus, SegmentIndex, StageSpan,
+};
 
 /// Interned stage name index.
 pub type StageNameIdx = u16;
-
-/// Information about a buffer storage detected from the uscope schema.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct BufferInfo {
-    pub name: String,
-    pub storage_id: u16,
-    pub capacity: u16,
-    /// Fields defined on this buffer: (name, field_type as u8).
-    pub fields: Vec<(String, u8)>,
-    /// Storage-level property definitions with pointer-pair metadata. v0.3.
-    pub properties: Vec<BufferPropertyDef>,
-}
-
-/// A storage-level property definition with pointer-pair metadata.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct BufferPropertyDef {
-    pub name: String,
-    pub field_type: u8,
-    /// 0=plain, 1=HEAD_PTR, 2=TAIL_PTR.
-    pub role: u8,
-    /// Pointer pair grouping (head/tail with same pair_id form a pair).
-    pub pair_id: u8,
-}
-
-/// A single stage span within an instruction's pipeline execution.
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-pub struct StageSpan {
-    pub stage_name_idx: StageNameIdx,
-    pub lane: u8,
-    pub _pad: u8,
-    pub start_cycle: u32,
-    pub end_cycle: u32,
-}
-
-static_assertions_size!(StageSpan, 12);
-
-/// Dependency relationship between two instructions.
-#[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
-pub struct Dependency {
-    pub producer: u32,
-    pub consumer: u32,
-    pub kind: DepKind,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DepKind {
-    Data,
-    Control,
-    Memory,
-}
-
-/// Retirement status of an instruction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RetireStatus {
-    Retired,
-    Flushed,
-    InFlight,
-}
-
-/// Per-instruction data.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct InstructionData {
-    pub id: u32,
-    pub sim_id: u64,
-    pub thread_id: u16,
-    /// Retire buffer ID (slot in the retire queue). `None` if not yet allocated.
-    pub rbid: Option<u32>,
-    /// Issue queue ID (index into cpu.issue_queue_names). `None` if unknown.
-    pub iq_id: Option<u32>,
-    /// Dispatch queue ID (index into cpu.dispatch_queue_names). `None` if unknown.
-    pub dq_id: Option<u32>,
-    /// Cycle at which the instruction became ready in the issue queue. `None` if not yet ready.
-    pub ready_cycle: Option<u32>,
-    pub disasm: String,
-    pub tooltip: String,
-    pub stage_range: Range<u32>,
-    pub retire_status: RetireStatus,
-    pub first_cycle: u32,
-    pub last_cycle: u32,
-}
 
 /// Occupancy snapshot of a queue at a specific cycle.
 #[derive(Debug, Clone)]
@@ -107,7 +27,7 @@ pub struct QueueSlotEntry {
 #[derive(Debug, Clone, Default)]
 #[allow(dead_code)]
 pub struct QueueOccupancy {
-    /// Retire queue: indexed by RBID → Option<QueueSlotEntry>.
+    /// Retire queue: indexed by RBID -> Option<QueueSlotEntry>.
     pub retire_queue: Vec<Option<QueueSlotEntry>>,
     /// Dispatch queue entries grouped by queue ID.
     pub dispatch_queues: Vec<(u32, Vec<QueueSlotEntry>)>,
@@ -115,53 +35,7 @@ pub struct QueueOccupancy {
     pub issue_queues: Vec<(u32, Vec<QueueSlotEntry>)>,
 }
 
-/// Display mode for a performance counter value.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CounterDisplayMode {
-    /// Raw cumulative value.
-    Total,
-    /// Delta / window_size (e.g., IPC).
-    Rate,
-    /// Single-cycle change.
-    Delta,
-}
-
-/// A single performance counter time-series.
-#[derive(Debug, Clone)]
-pub struct CounterSeries {
-    /// Display name (scope-qualified if multi-scope trace).
-    pub name: String,
-    /// Sparse counter samples: (cycle, cumulative_value) pairs.
-    /// One entry per segment boundary (from checkpoint data).
-    /// Sorted by cycle.
-    pub samples: Vec<(u32, u64)>,
-    /// Default display mode.
-    pub default_mode: CounterDisplayMode,
-}
-
-/// Lightweight index mapping segment indices to their cycle ranges.
-/// Built on load from uscope segment time bounds; enables binary search
-/// for "which segments cover cycles N..M?" in future lazy-loading phases.
-#[derive(Debug, Clone, Default)]
-pub struct SegmentIndex {
-    /// (start_cycle, end_cycle) per segment, ordered by segment index.
-    pub segments: Vec<(u32, u32)>,
-}
-
-impl SegmentIndex {
-    /// Find segment indices that overlap the given cycle range.
-    #[allow(dead_code)]
-    pub fn segments_in_range(&self, start_cycle: u32, end_cycle: u32) -> Vec<usize> {
-        self.segments
-            .iter()
-            .enumerate()
-            .filter(|(_, (seg_start, seg_end))| *seg_start < end_cycle && *seg_end > start_cycle)
-            .map(|(idx, _)| idx)
-            .collect()
-    }
-}
-
-/// The full pipeline trace — owns all data in SoA layout.
+/// The full pipeline trace -- owns all data in SoA layout.
 #[derive(Debug, Clone)]
 pub struct PipelineTrace {
     pub instructions: Vec<InstructionData>,
@@ -176,7 +50,7 @@ pub struct PipelineTrace {
     pub total_instruction_count: usize,
     /// Key-value metadata from the trace source (DUT properties, format info, etc.).
     pub metadata: Vec<(String, String)>,
-    /// Clock period in picoseconds (from uscope traces). Enables cycle↔timestamp conversion.
+    /// Clock period in picoseconds (from uscope traces). Enables cycle<->timestamp conversion.
     pub period_ps: Option<u64>,
     /// If set, `max_cycle()` returns this value instead of computing from instructions.
     /// Used by lazy-loading to report the full trace extent before instructions are loaded.
@@ -226,7 +100,7 @@ impl PipelineTrace {
         self.stage_names.len()
     }
 
-    /// Add an instruction and update the id→row mapping.
+    /// Add an instruction and update the id->row mapping.
     pub fn add_instruction(&mut self, instr: InstructionData) {
         let row = self.instructions.len();
         self.id_to_row.insert(instr.id, row);
@@ -273,99 +147,28 @@ impl PipelineTrace {
 
     /// Get cumulative counter value at a cycle.
     ///
-    /// Uses binary search over sparse samples. Returns the value from the
-    /// sample at or just before the given cycle.
+    /// Delegates to `uscope_cpu::counters::counter_value_at`.
     pub fn counter_value_at(&self, counter_idx: usize, cycle: u32) -> u64 {
-        let series = &self.counters[counter_idx];
-        if series.samples.is_empty() {
-            return 0;
-        }
-        match series.samples.binary_search_by_key(&cycle, |(c, _)| *c) {
-            Ok(i) => series.samples[i].1,
-            Err(0) => 0,
-            Err(i) => series.samples[i - 1].1,
-        }
+        uscope_cpu::counters::counter_value_at(&self.counters[counter_idx], cycle)
     }
 
     /// Get counter rate over a window ending at the given cycle.
     #[allow(dead_code)]
     pub fn counter_rate_at(&self, counter_idx: usize, cycle: u32, window: u32) -> f64 {
-        let end_val = self.counter_value_at(counter_idx, cycle);
-        let start_cycle = cycle.saturating_sub(window);
-        let start_val = self.counter_value_at(counter_idx, start_cycle);
-        let actual_window = cycle.saturating_sub(start_cycle);
-        if actual_window == 0 {
-            return 0.0;
-        }
-        (end_val.wrapping_sub(start_val)) as f64 / actual_window as f64
+        uscope_cpu::counters::counter_rate_at(&self.counters[counter_idx], cycle, window)
     }
 
     #[allow(dead_code)]
     /// Get single-cycle delta for a counter.
     ///
-    /// With sparse samples, computes the interpolated per-cycle rate between
-    /// the two nearest samples surrounding the given cycle.
+    /// Delegates to `uscope_cpu::counters::counter_delta_at`.
     pub fn counter_delta_at(&self, counter_idx: usize, cycle: u32) -> u64 {
-        let series = &self.counters[counter_idx];
-        if series.samples.is_empty() {
-            return 0;
-        }
-        // Find the sample interval containing this cycle and compute
-        // the average per-cycle delta within that interval.
-        match series.samples.binary_search_by_key(&cycle, |(c, _)| *c) {
-            Ok(i) => {
-                // Exact match on a sample boundary.
-                if i == 0 {
-                    // First sample: delta from 0 to this value over the cycles.
-                    let (c, v) = series.samples[0];
-                    if c == 0 {
-                        return v;
-                    }
-                    return v / c as u64;
-                }
-                let (prev_c, prev_v) = series.samples[i - 1];
-                let (cur_c, cur_v) = series.samples[i];
-                let span = cur_c.saturating_sub(prev_c) as u64;
-                if span == 0 {
-                    return 0;
-                }
-                cur_v.wrapping_sub(prev_v) / span
-            }
-            Err(0) => {
-                // Before the first sample.
-                if series.samples.is_empty() {
-                    return 0;
-                }
-                let (c, v) = series.samples[0];
-                if c == 0 {
-                    return 0;
-                }
-                v / c as u64
-            }
-            Err(i) if i >= series.samples.len() => {
-                // After the last sample: assume the counter stops changing.
-                0
-            }
-            Err(i) => {
-                // Between samples[i-1] and samples[i].
-                let (prev_c, prev_v) = series.samples[i - 1];
-                let (next_c, next_v) = series.samples[i];
-                let span = next_c.saturating_sub(prev_c) as u64;
-                if span == 0 {
-                    return 0;
-                }
-                next_v.wrapping_sub(prev_v) / span
-            }
-        }
+        uscope_cpu::counters::counter_delta_at(&self.counters[counter_idx], cycle)
     }
 
     /// Downsample a counter to min-max envelope buckets over a cycle range.
     ///
-    /// Returns `bucket_count` pairs of `(min_rate, max_rate)` covering
-    /// `[start_cycle, end_cycle)`. Each bucket reports the min and max
-    /// per-cycle rates among the sparse sample intervals that overlap
-    /// that bucket. Useful for sparkline rendering where many cycles
-    /// compress into one pixel.
+    /// Delegates to `uscope_cpu::counters::counter_downsample_minmax`.
     pub fn counter_downsample_minmax(
         &self,
         counter_idx: usize,
@@ -373,72 +176,12 @@ impl PipelineTrace {
         end_cycle: u32,
         bucket_count: usize,
     ) -> Vec<(u64, u64)> {
-        if bucket_count == 0 || start_cycle >= end_cycle {
-            return Vec::new();
-        }
-        let series = &self.counters[counter_idx];
-        if series.samples.is_empty() {
-            return vec![(0, 0); bucket_count];
-        }
-
-        // Build intervals with f64 rates to avoid integer division truncation.
-        // Each interval: (start_cycle, end_cycle, rate_per_cycle).
-        let mut intervals: Vec<(u32, u32, f64)> = Vec::with_capacity(series.samples.len() + 1);
-        if let Some(&(first_c, _first_v)) = series.samples.first() {
-            if first_c > 0 {
-                // No counter events fired before the first sample — rate is 0.
-                intervals.push((0, first_c, 0.0));
-            }
-        }
-        for w in series.samples.windows(2) {
-            let (c0, v0) = w[0];
-            let (c1, v1) = w[1];
-            let span = c1.saturating_sub(c0) as f64;
-            let rate = if span > 0.0 {
-                v1.wrapping_sub(v0) as f64 / span
-            } else {
-                0.0
-            };
-            intervals.push((c0, c1, rate));
-        }
-
-        let range = end_cycle.saturating_sub(start_cycle) as f64;
-        let cycles_per_bucket = range / bucket_count as f64;
-
-        // Compute f64 rates per bucket, then scale to integer range.
-        let mut f64_result: Vec<(f64, f64)> = Vec::with_capacity(bucket_count);
-        for b in 0..bucket_count {
-            let bucket_start = start_cycle + (b as f64 * cycles_per_bucket) as u32;
-            let bucket_end = start_cycle + ((b + 1) as f64 * cycles_per_bucket) as u32;
-            let bucket_end = bucket_end.min(end_cycle);
-
-            let mut min_rate = f64::MAX;
-            let mut max_rate = 0.0f64;
-
-            for &(iv_start, iv_end, rate) in &intervals {
-                if iv_start < bucket_end && iv_end > bucket_start {
-                    min_rate = min_rate.min(rate);
-                    max_rate = max_rate.max(rate);
-                }
-            }
-            if min_rate == f64::MAX {
-                min_rate = 0.0;
-                max_rate = 0.0;
-            }
-            f64_result.push((min_rate, max_rate));
-        }
-
-        // Scale so the global max maps to a large integer (paint_bars normalizes).
-        let global_max = f64_result.iter().map(|(_, mx)| *mx).fold(0.0f64, f64::max);
-        let scale = if global_max > 0.0 {
-            1_000_000.0 / global_max
-        } else {
-            1.0
-        };
-        f64_result
-            .iter()
-            .map(|(mn, mx)| ((mn * scale) as u64, (mx * scale) as u64))
-            .collect()
+        uscope_cpu::counters::counter_downsample_minmax(
+            &self.counters[counter_idx],
+            start_cycle,
+            end_cycle,
+            bucket_count,
+        )
     }
 
     /// Compute queue occupancy at a given cycle.
@@ -560,11 +303,11 @@ impl PipelineTrace {
         self.instructions
             .sort_by(|a, b| a.first_cycle.cmp(&b.first_cycle).then(a.id.cmp(&b.id)));
 
-        // Rebuild id→row map after re-sort.
+        // Rebuild id->row map after re-sort.
         self.rebuild_id_map();
     }
 
-    /// Rebuild the id→row mapping (e.g. after deserialization or merge).
+    /// Rebuild the id->row mapping (e.g. after deserialization or merge).
     #[allow(dead_code)]
     pub fn rebuild_id_map(&mut self) {
         self.id_to_row.clear();
@@ -590,6 +333,8 @@ macro_rules! static_assertions_size {
     };
 }
 use static_assertions_size;
+
+static_assertions_size!(StageSpan, 12);
 
 #[cfg(test)]
 mod tests {
@@ -684,8 +429,8 @@ mod tests {
     fn test_counter_delta_at() {
         let mut trace = PipelineTrace::new();
         // Sparse samples at segment boundaries.
-        // Between cycle 0-2: cumulative goes 0→4, so avg rate = 4/2 = 2 per cycle.
-        // Between cycle 2-4: cumulative goes 4→10, so avg rate = 6/2 = 3 per cycle.
+        // Between cycle 0-2: cumulative goes 0->4, so avg rate = 4/2 = 2 per cycle.
+        // Between cycle 2-4: cumulative goes 4->10, so avg rate = 6/2 = 3 per cycle.
         trace.counters.push(CounterSeries {
             name: "bp_misses".to_string(),
             samples: vec![(0, 0), (2, 4), (4, 10)],
@@ -703,9 +448,7 @@ mod tests {
     fn test_counter_downsample_minmax() {
         let mut trace = PipelineTrace::new();
         // Sparse samples with varying rates between segments.
-        // (0,0)→(5,10): rate=2/cycle, (5,10)→(10,20): rate=2/cycle
-        // But let's make it more interesting:
-        // (0,0)→(5,5): rate=1/cycle, (5,5)→(10,20): rate=3/cycle
+        // (0,0)->(5,5): rate=1/cycle, (5,5)->(10,20): rate=3/cycle
         trace.counters.push(CounterSeries {
             name: "test".to_string(),
             samples: vec![(0, 0), (5, 5), (10, 20)],
@@ -717,13 +460,13 @@ mod tests {
         assert_eq!(result.len(), 2);
         // Rates are f64-scaled: bucket 0 rate=1, bucket 1 rate=3.
         // Output is scaled so max maps to 1_000_000.
-        // Bucket 0: 1/3 * 1_000_000 ≈ 333_333, Bucket 1: 1_000_000
+        // Bucket 0: 1/3 * 1_000_000 ~ 333_333, Bucket 1: 1_000_000
         assert!(result[0].1 > 0, "bucket 0 should be non-zero");
         assert!(
             result[1].1 > result[0].1,
             "bucket 1 (rate=3) > bucket 0 (rate=1)"
         );
-        // Check approximate ratio: bucket1 / bucket0 ≈ 3
+        // Check approximate ratio: bucket1 / bucket0 ~ 3
         let ratio = result[1].1 as f64 / result[0].1 as f64;
         assert!(
             (ratio - 3.0).abs() < 0.1,

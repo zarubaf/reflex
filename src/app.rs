@@ -26,7 +26,7 @@ use crate::views::pipeline_panel::PipelinePanel;
 use crate::views::search_bar::SearchBar;
 use crate::views::status_bar::StatusBar;
 use crate::wcp::WcpClient;
-use uscope::reader::Reader;
+use uscope_cpu::CpuTrace;
 
 thread_local! {
     static RESTORE_STATE: std::cell::RefCell<Option<Entity<TraceState>>> = const { std::cell::RefCell::new(None) };
@@ -244,18 +244,13 @@ pub struct TraceState {
     /// FPS tracking.
     pub frame_times: VecDeque<Instant>,
     pub fps: f64,
-    /// uscope reader kept alive for on-demand segment loading.
+    /// CpuTrace for on-demand segment loading and buffer/counter queries.
     /// `None` for generator-produced traces.
-    pub reader: Option<Reader>,
+    pub cpu_trace: Option<CpuTrace>,
     /// Segment-to-cycle index for fast lookup of which segments cover a cycle range.
     pub segment_index: SegmentIndex,
-    /// Context needed for on-demand segment loading (protocol IDs, decoder, etc.).
-    /// `None` for generator-produced traces.
-    pub uscope_ctx: Option<crate::trace::uscope_source::UscopeContext>,
     /// Set of segment indices whose instructions have been loaded into the trace.
     pub loaded_segments: HashSet<usize>,
-    /// Pre-computed trace summary (counter mipmaps + instruction density) for fast queries.
-    pub trace_summary: Option<uscope::summary::TraceSummary>,
 }
 
 impl TraceState {
@@ -270,11 +265,9 @@ impl TraceState {
             counter_range: None,
             frame_times: VecDeque::new(),
             fps: 0.0,
-            reader: None,
+            cpu_trace: None,
             segment_index: SegmentIndex::default(),
-            uscope_ctx: None,
             loaded_segments: HashSet::new(),
-            trace_summary: None,
         }
     }
 
@@ -283,23 +276,29 @@ impl TraceState {
         self.counter_range.unwrap_or((0, self.trace.max_cycle()))
     }
 
-    /// Get counter value at a cycle.
-    /// Uses per-cycle samples when available, otherwise mipmap.
-    pub fn counter_value_at(&self, counter_idx: usize, cycle: u32) -> u64 {
-        if counter_idx < self.trace.counters.len()
-            && !self.trace.counters[counter_idx].samples.is_empty()
-        {
-            return self.trace.counter_value_at(counter_idx, cycle);
-        }
-        if let Some(ref summary) = self.trace_summary {
-            summary.counter_value_at(counter_idx, cycle)
-        } else {
-            0
-        }
+    /// Access the trace summary from the CpuTrace, if available.
+    pub fn trace_summary(&self) -> Option<&uscope::summary::TraceSummary> {
+        self.cpu_trace.as_ref().and_then(|ct| ct.trace_summary())
     }
 
-    /// Get counter rate at a cycle, using mipmap if available.
+    /// Get counter value at a cycle.
+    /// Delegates to CpuTrace when available (handles mipmap fallback),
+    /// otherwise uses PipelineTrace's sparse samples.
+    pub fn counter_value_at(&self, counter_idx: usize, cycle: u32) -> u64 {
+        if let Some(ref ct) = self.cpu_trace {
+            return ct.counter_value_at(counter_idx, cycle);
+        }
+        if counter_idx < self.trace.counters.len() {
+            return self.trace.counter_value_at(counter_idx, cycle);
+        }
+        0
+    }
+
+    /// Get counter rate at a cycle, using CpuTrace mipmap if available.
     pub fn counter_rate_at(&self, counter_idx: usize, cycle: u32, window: u32) -> f64 {
+        if let Some(ref ct) = self.cpu_trace {
+            return ct.counter_rate_at(counter_idx, cycle, window);
+        }
         let end_val = self.counter_value_at(counter_idx, cycle);
         let start_val = self.counter_value_at(counter_idx, cycle.saturating_sub(window));
         let actual_window = cycle.saturating_sub(cycle.saturating_sub(window));
@@ -309,8 +308,11 @@ impl TraceState {
         (end_val.wrapping_sub(start_val)) as f64 / actual_window as f64
     }
 
-    /// Get counter delta at a cycle, using mipmap if available.
+    /// Get counter delta at a cycle, using CpuTrace if available.
     pub fn counter_delta_at(&self, counter_idx: usize, cycle: u32) -> u64 {
+        if let Some(ref ct) = self.cpu_trace {
+            return ct.counter_delta_at(counter_idx, cycle);
+        }
         let curr = self.counter_value_at(counter_idx, cycle);
         let prev = if cycle > 0 {
             self.counter_value_at(counter_idx, cycle - 1)
@@ -320,7 +322,7 @@ impl TraceState {
         curr.wrapping_sub(prev)
     }
 
-    /// Fast counter downsampling using mipmaps when available.
+    /// Fast counter downsampling using CpuTrace mipmaps when available.
     /// Falls back to PipelineTrace::counter_downsample_minmax() for sparse samples.
     pub fn counter_downsample(
         &self,
@@ -333,10 +335,13 @@ impl TraceState {
             return Vec::new();
         }
 
-        // Use per-cycle samples when available (populated for small traces).
-        if counter_idx < self.trace.counters.len()
-            && !self.trace.counters[counter_idx].samples.is_empty()
-        {
+        // Delegate to CpuTrace which handles mipmap + sparse fallback.
+        if let Some(ref ct) = self.cpu_trace {
+            return ct.counter_downsample(counter_idx, start_cycle, end_cycle, bucket_count);
+        }
+
+        // Fallback for generator traces: use PipelineTrace sparse samples.
+        if counter_idx < self.trace.counters.len() {
             return self.trace.counter_downsample_minmax(
                 counter_idx,
                 start_cycle,
@@ -345,104 +350,28 @@ impl TraceState {
             );
         }
 
-        // Mipmap path (large traces).
-        if let Some(ref summary) = self.trace_summary {
-            if counter_idx < summary.counters.len() {
-                let mipmap = &summary.counters[counter_idx];
-                let range_cycles = end_cycle - start_cycle;
-                let cycles_per_bucket = range_cycles as f64 / bucket_count as f64;
-
-                // Pick the mipmap level where each mipmap entry covers
-                // roughly one output bucket (or slightly finer).
-                let base = summary.base_interval_cycles as f64;
-                let fan = summary.fan_out as f64;
-                let mut level = 0usize;
-                let mut level_interval = base;
-                while level + 1 < mipmap.levels.len() && level_interval * fan <= cycles_per_bucket {
-                    level += 1;
-                    level_interval *= fan;
-                }
-
-                let entries = &mipmap.levels[level];
-                if entries.is_empty() {
-                    return vec![(0, 0); bucket_count];
-                }
-
-                // Map output buckets to mipmap entries.
-                let level_interval = summary.base_interval_cycles as f64
-                    * (summary.fan_out as f64).powi(level as i32);
-
-                let mut result = Vec::with_capacity(bucket_count);
-                for b in 0..bucket_count {
-                    let b_start = start_cycle as f64 + b as f64 * cycles_per_bucket;
-                    let b_end = b_start + cycles_per_bucket;
-
-                    // Find mipmap entries overlapping this bucket.
-                    let entry_start = (b_start / level_interval) as usize;
-                    let entry_end = ((b_end / level_interval).ceil() as usize).min(entries.len());
-
-                    // Use weighted average rate instead of raw min/max to avoid
-                    // moiré patterns from mipmap bucket boundary misalignment.
-                    let mut total_sum = 0.0f64;
-                    let mut total_cycles = 0.0f64;
-                    for (ei, entry) in entries[entry_start..entry_end].iter().enumerate() {
-                        let e_start = (entry_start + ei) as f64 * level_interval;
-                        let e_end = e_start + level_interval;
-                        let overlap_start = b_start.max(e_start);
-                        let overlap_end = b_end.min(e_end);
-                        let overlap = (overlap_end - overlap_start).max(0.0);
-                        let entry_frac = overlap / level_interval;
-                        total_sum += entry.sum as f64 * entry_frac;
-                        total_cycles += overlap;
-                    }
-                    let avg_rate = if total_cycles > 0.0 {
-                        (total_sum / total_cycles * level_interval) as u64
-                    } else {
-                        0
-                    };
-                    result.push((avg_rate, avg_rate));
-                }
-                return result;
-            }
-        }
-
-        // Fallback to sparse sample method.
-        self.trace
-            .counter_downsample_minmax(counter_idx, start_cycle, end_cycle, bucket_count)
+        vec![(0, 0); bucket_count]
     }
 
-    pub fn load_trace(
-        &mut self,
-        trace: PipelineTrace,
-        reader: Option<Reader>,
-        segment_index: SegmentIndex,
-    ) {
+    pub fn load_trace(&mut self, trace: PipelineTrace, segment_index: SegmentIndex) {
         self.viewport.max_cycle = trace.max_cycle();
         self.viewport.max_row = trace.row_count();
         self.viewport.clamp();
         self.trace = Arc::new(trace);
         // Reset counter range to full trace when loading new file
         self.counter_range = None;
-        self.reader = reader;
+        self.cpu_trace = None;
         self.segment_index = segment_index;
-        self.uscope_ctx = None;
         self.loaded_segments.clear();
     }
 
     /// Load a trace in lazy mode: metadata + counters are loaded, but
     /// instructions are loaded on demand as the viewport scrolls.
-    pub fn load_trace_lazy(
-        &mut self,
-        mut trace: PipelineTrace,
-        reader: Reader,
-        segment_index: SegmentIndex,
-        uscope_ctx: crate::trace::uscope_source::UscopeContext,
-        trace_summary: Option<uscope::summary::TraceSummary>,
-    ) {
+    pub fn load_trace_lazy(&mut self, mut trace: PipelineTrace, cpu_trace: CpuTrace) {
         self.viewport.max_cycle = trace.max_cycle();
 
         // Use trace summary for total instruction count and max_row if available.
-        if let Some(ref summary) = trace_summary {
+        if let Some(summary) = cpu_trace.trace_summary() {
             trace.total_instruction_count = summary.total_instructions as usize;
             self.viewport.max_row = summary.total_instructions as usize;
         } else {
@@ -450,12 +379,12 @@ impl TraceState {
             self.viewport.max_row = 0;
         }
 
+        let segment_index = cpu_trace.segment_index().clone();
+
         self.viewport.clamp();
         self.trace = Arc::new(trace);
-        self.reader = Some(reader);
-        self.trace_summary = trace_summary;
         self.segment_index = segment_index;
-        self.uscope_ctx = Some(uscope_ctx);
+        self.cpu_trace = Some(cpu_trace);
         self.loaded_segments.clear();
     }
 
@@ -465,7 +394,7 @@ impl TraceState {
     /// Returns `true` if new segments were loaded (trace data changed).
     pub fn ensure_segments_loaded(&mut self, start_cycle: u32, end_cycle: u32) -> bool {
         // Only applies to lazy-loaded uscope traces.
-        if self.uscope_ctx.is_none() {
+        if self.cpu_trace.is_none() {
             return false;
         }
 
@@ -489,10 +418,9 @@ impl TraceState {
             return false;
         }
 
-        // Load the segments.
-        let ctx = self.uscope_ctx.as_ref().unwrap();
-        let reader = self.reader.as_mut().unwrap();
-        match crate::trace::uscope_source::load_segments(reader, ctx, &unloaded) {
+        // Load the segments via CpuTrace.
+        let ct = self.cpu_trace.as_mut().unwrap();
+        match ct.load_segments(&unloaded) {
             Ok(result) => {
                 for &idx in &unloaded {
                     self.loaded_segments.insert(idx);
@@ -552,140 +480,34 @@ impl TraceState {
     /// (where the first field, `entity_id`, is non-zero).
     /// `field_values` contains the raw u64 value for every field in the buffer.
     ///
-    /// Returns an empty vec if no reader is available or the query fails.
     /// Query buffer storage state at a given cycle.
     ///
     /// Returns occupied slots with field values, entity fields, and storage-level
     /// property values (with pointer-pair metadata for ROB visualization).
+    /// Returns a default result if no CpuTrace is available.
     pub fn query_buffer_state(
         &mut self,
         buffer_idx: usize,
         cycle: u32,
     ) -> crate::views::buffer_panel::BufferQueryResult {
-        use crate::views::buffer_panel::{BufferQueryResult, PropertyValue};
-        let buf = match self.trace.buffers.get(buffer_idx) {
-            Some(b) => b.clone(),
-            None => return BufferQueryResult::default(),
+        let ct = match self.cpu_trace.as_mut() {
+            Some(ct) => ct,
+            None => return crate::views::buffer_panel::BufferQueryResult::default(),
         };
-        let period_ps = match self.trace.period_ps {
-            Some(p) => p,
-            None => return BufferQueryResult::default(),
-        };
-        let reader = match self.reader.as_mut() {
-            Some(r) => r,
-            None => return BufferQueryResult::default(),
-        };
-
-        let time_ps = cycle as u64 * period_ps;
-        let trace_state = match reader.state_at(time_ps) {
-            Ok(s) => s,
-            Err(_) => return BufferQueryResult::default(),
-        };
-
-        let storage_id = buf.storage_id;
-        let storage = match trace_state
-            .storages
-            .iter()
-            .find(|s| s.storage_id == storage_id)
-        {
-            Some(s) => s,
-            None => return BufferQueryResult::default(),
-        };
-
-        let offsets = reader.field_offsets().get(storage_id as usize).cloned();
-        let offsets = match offsets {
-            Some(o) => o,
-            None => return BufferQueryResult::default(),
-        };
-
-        // Find the entities storage and its field names for entity field lookup.
-        let entities_sid = self
-            .uscope_ctx
-            .as_ref()
-            .map(|c| c.entities_storage_id())
-            .unwrap_or(u16::MAX);
-        let entities_storage = trace_state
-            .storages
-            .iter()
-            .find(|s| s.storage_id == entities_sid);
-        let entities_offsets = reader.field_offsets().get(entities_sid as usize).cloned();
-        let schema = reader.schema();
-        let entity_field_names: Vec<String> = schema
-            .storages
-            .iter()
-            .find(|s| s.storage_id == entities_sid)
-            .map(|s| {
-                s.fields
-                    .iter()
-                    .map(|f| schema.get_string(f.name).unwrap_or("?").to_string())
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let num_fields = buf.fields.len() as u16;
-
-        // Pre-build entity_id → slot index map for O(1) lookup (avoids O(B×E) nested scan).
-        let entity_slot_map: std::collections::HashMap<u64, u16> =
-            if let (Some(es), Some(ref eo)) = (&entities_storage, &entities_offsets) {
-                (0..es.num_slots)
-                    .filter(|&s| es.valid.get(s as usize).copied().unwrap_or(false))
-                    .map(|s| (es.get_field_at(s, eo, 0), s))
-                    .collect()
-            } else {
-                std::collections::HashMap::new()
-            };
-
-        let mut result = Vec::new();
-
-        for slot in 0..storage.num_slots {
-            if storage.is_sparse && !storage.valid.get(slot as usize).copied().unwrap_or(false) {
-                continue;
-            }
-            let entity_id = storage.get_field_at(slot, &offsets, 0);
-            if entity_id == 0 {
-                continue;
-            }
-            let mut field_values = Vec::with_capacity(num_fields as usize);
-            for fi in 0..num_fields {
-                field_values.push(storage.get_field_at(slot, &offsets, fi));
-            }
-
-            // Look up entity fields via pre-built map (O(1) per slot).
-            let mut entity_fields = Vec::new();
-            if let (Some(es), Some(ref eo)) = (&entities_storage, &entities_offsets) {
-                if let Some(&es_slot) = entity_slot_map.get(&entity_id) {
-                    for (fi, name) in entity_field_names.iter().enumerate().skip(2) {
-                        let val = es.get_field_at(es_slot, eo, fi as u16);
-                        if val != 0 {
-                            entity_fields.push((name.clone(), val));
-                        }
-                    }
-                }
-            }
-
-            result.push((slot, field_values, entity_fields));
-        }
-
-        // Read storage-level property values (v0.3: pointer pairs, etc.).
-        let mut properties = Vec::new();
-        let buf_schema = schema.storages.iter().find(|s| s.storage_id == storage_id);
-        if let Some(bsd) = buf_schema {
-            for (pi, prop) in bsd.properties.iter().enumerate() {
-                let val = storage.get_property(&offsets, pi as u16);
-                let name = schema.get_string(prop.name).unwrap_or("?").to_string();
-                properties.push(PropertyValue {
-                    name,
-                    value: val,
-                    role: prop.role,
-                    pair_id: prop.pair_id,
-                });
-            }
-        }
-
-        BufferQueryResult {
-            slots: result,
-            properties,
-            capacity: buf.capacity,
+        let state = ct.buffer_state_at(buffer_idx, cycle);
+        crate::views::buffer_panel::BufferQueryResult {
+            slots: state.slots,
+            properties: state
+                .properties
+                .into_iter()
+                .map(|p| crate::views::buffer_panel::PropertyValue {
+                    name: p.name,
+                    value: p.value,
+                    role: p.role,
+                    pair_id: p.pair_id,
+                })
+                .collect(),
+            capacity: state.capacity,
         }
     }
 
@@ -1050,11 +872,9 @@ impl AppView {
         cx: &mut Context<Self>,
     ) {
         match crate::trace::uscope_source::open_uscope(path) {
-            Ok((reader, trace, segment_index, uscope_ctx, trace_summary)) => {
+            Ok((trace, cpu_trace)) => {
                 let state = cx.new(|_cx| TraceState::new());
-                state.update(cx, |ts, _cx| {
-                    ts.load_trace_lazy(trace, reader, segment_index, uscope_ctx, trace_summary)
-                });
+                state.update(cx, |ts, _cx| ts.load_trace_lazy(trace, cpu_trace));
                 let id = self.next_tab_id;
                 self.next_tab_id += 1;
                 let path_str = path.to_string_lossy().into_owned();
@@ -1494,9 +1314,7 @@ impl AppView {
             ..Default::default()
         });
         let state = cx.new(|_cx| TraceState::new());
-        state.update(cx, |ts, _cx| {
-            ts.load_trace(trace, None, SegmentIndex::default())
-        });
+        state.update(cx, |ts, _cx| ts.load_trace(trace, SegmentIndex::default()));
         let id = self.next_tab_id;
         self.next_tab_id += 1;
         self.tabs.push(TabEntry {
@@ -1520,20 +1338,13 @@ impl AppView {
             if let Ok(Ok(Some(paths))) = receiver.await {
                 if let Some(path) = paths.first() {
                     match crate::trace::uscope_source::open_uscope(path) {
-                        Ok((reader, trace, segment_index, uscope_ctx, trace_summary)) => {
+                        Ok((trace, cpu_trace)) => {
                             let path_str = path.to_string_lossy().into_owned();
                             let _ = cx.update(|cx| {
                                 let _ = this.update(cx, |app, cx| {
                                     let state = cx.new(|_cx| TraceState::new());
-                                    state.update(cx, |ts, _cx| {
-                                        ts.load_trace_lazy(
-                                            trace,
-                                            reader,
-                                            segment_index,
-                                            uscope_ctx,
-                                            trace_summary,
-                                        )
-                                    });
+                                    state
+                                        .update(cx, |ts, _cx| ts.load_trace_lazy(trace, cpu_trace));
                                     let id = app.next_tab_id;
                                     app.next_tab_id += 1;
                                     app.tabs.push(TabEntry {
@@ -1569,9 +1380,9 @@ impl AppView {
         let file_path = self.tabs[self.active_tab].file_path.clone();
         if let Some(ref path) = file_path {
             match crate::trace::uscope_source::open_uscope(std::path::Path::new(path)) {
-                Ok((reader, trace, segment_index, uscope_ctx, trace_summary)) => {
+                Ok((trace, cpu_trace)) => {
                     self.with_active_state(cx, |ts, cx| {
-                        ts.load_trace_lazy(trace, reader, segment_index, uscope_ctx, trace_summary);
+                        ts.load_trace_lazy(trace, cpu_trace);
                         cx.notify();
                     });
                 }
@@ -1585,7 +1396,7 @@ impl AppView {
                 ..Default::default()
             });
             self.with_active_state(cx, |ts, cx| {
-                ts.load_trace(trace, None, SegmentIndex::default());
+                ts.load_trace(trace, SegmentIndex::default());
                 cx.notify();
             });
         }

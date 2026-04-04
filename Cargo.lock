@@ -4715,7 +4715,6 @@ dependencies = [
  "gpui",
  "gpui-component",
  "gpui-component-assets",
- "instruction-decoder",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
@@ -4726,6 +4725,7 @@ dependencies = [
  "thiserror 2.0.18",
  "toml 0.8.23",
  "uscope",
+ "uscope-cpu",
 ]
 
 [[package]]
@@ -6402,6 +6402,14 @@ version = "0.1.0"
 dependencies = [
  "byteorder",
  "lz4_flex",
+]
+
+[[package]]
+name = "uscope-cpu"
+version = "0.1.0"
+dependencies = [
+ "instruction-decoder",
+ "uscope",
 ]
 
 [[package]]
