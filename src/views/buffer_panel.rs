@@ -295,7 +295,7 @@ impl Render for BufferPanel {
                     };
                     let entity_id =
                         field_values.and_then(|fv| fv.first().copied()).unwrap_or(0) as u32;
-                    let is_occupied = entity_id != 0 && slot_entry.is_some();
+                    let is_occupied = slot_entry.is_some();
 
                     let instr_row = if is_occupied {
                         ts.trace.row_for_id(entity_id)
